@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "vercel-build": "node ./scripts/copy-images.js",
+    "build": "npm run vercel-build"
   },
   "engines": {
     "node": ">=18"
