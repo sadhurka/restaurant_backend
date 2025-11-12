@@ -9,12 +9,22 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 
-// Serve static images from the 'public' directory inside 'backend' (was 'images')
-const publicPath = path.join(__dirname, 'public');
-console.log('Express is serving static files from this directory:', publicPath);
+// If running behind a proxy (Vercel, Render, etc.) trust proxy headers
+// so req.protocol and req.get('host') reflect the external URL.
+app.set('trust proxy', true);
 
-// Keep the external path as /images for compatibility with frontend
-app.use('/images', express.static(publicPath));
+// Serve static images. Prefer `public/images` (build output) then fall back to `images`.
+const publicImagesDir = path.join(__dirname, 'public', 'images');
+const imagesDir = path.join(__dirname, 'images');
+console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
+
+// Two static handlers: first serve from public/images, then from images
+if (fs.existsSync(publicImagesDir)) {
+  app.use('/images', express.static(publicImagesDir, { maxAge: '1d' }));
+}
+if (fs.existsSync(imagesDir)) {
+  app.use('/images', express.static(imagesDir, { maxAge: '1d' }));
+}
 
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
@@ -27,7 +37,10 @@ app.get('/api/menu', (req, res) => {
         const jsonData = fs.readFileSync(path.join(__dirname, 'data', 'menu.json'));
         const data = JSON.parse(jsonData);
         
-        const backendUrl = `${req.protocol}://${req.get('host')}`;
+  // Build a backend URL using forwarded proto (if present) and host header.
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  const host = req.get('host') || '';
+  const backendUrl = host ? `${proto}://${host}` : '';
 
         // Group by category
         const groupedByCategory = data.reduce((acc, item) => {
@@ -43,20 +56,21 @@ app.get('/api/menu', (req, res) => {
         for (const category in groupedByCategory) {
             const items = groupedByCategory[category];
             
-            const hasImage = items.some(item => item.image);
-            if (!hasImage && items.length > 0) {
-                items[0].image = 'bg4.png'; // Assign fallback if no image in category
-            }
+      const hasImage = items.some(item => item.image);
+      // If no image exists in the whole category, assign a sensible fallback
+      if (!hasImage && items.length > 0) {
+        items[0].image = 'bg4.png';
+      }
 
-            // Format items and build full image URLs
-            const formattedItems = items.map(item => ({
-                ...item,
-                price: parseFloat(item.price || 0),
-                badge: item.badge || '',
-                category: item.category || 'Other',
-                tags: item.tags || '',
-                image: item.image ? `${backendUrl}/images/${item.image}` : null
-            }));
+      // Format items and build full image URLs. If item.image is an absolute URL, keep it.
+      const formattedItems = items.map(item => ({
+        ...item,
+        price: parseFloat(item.price || 0),
+        badge: item.badge || '',
+        category: item.category || 'Other',
+        tags: item.tags || '',
+        image: item.image ? (/^https?:\/\//i.test(item.image) ? item.image : `${backendUrl}/images/${item.image}`) : null
+      }));
             
             allItemsFormatted.push(...formattedItems);
         }
