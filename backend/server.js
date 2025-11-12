@@ -9,12 +9,13 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 
-// Serve static images from the 'images' directory inside 'backend'
-const imagePath = path.join(__dirname, 'images');
-console.log('Express is serving static files from this directory:', imagePath); // Diagnostic log
+// Serve static images from the 'public' directory inside 'backend' (was 'images')
+const publicPath = path.join(__dirname, 'public');
+console.log('Express is serving static files from this directory:', publicPath);
 
-// Use the corrected 'imagePath' here:
-app.use('/images', express.static(imagePath));
+// Keep the external path as /images for compatibility with frontend
+app.use('/images', express.static(publicPath));
+
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
