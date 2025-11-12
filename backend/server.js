@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
@@ -6,7 +7,9 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const app = express();
+
 // Allow configuring allowed origin in production. Default to unrestricted during development.
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 app.use(cors({ origin: CORS_ORIGIN }));
@@ -36,24 +39,24 @@ if (!fs.existsSync(dataDir)) {
 // Serve menu data
 app.get('/api/menu', (req, res) => {
     try {
-          const jsonData = fs.readFileSync(path.join(__dirname, 'data', 'menu.json'));
-          const data = JSON.parse(jsonData);
+        const jsonData = fs.readFileSync(path.join(__dirname, 'data', 'menu.json'));
+        const data = JSON.parse(jsonData);
 
-      // Determine backend base URL. Preference order:
-      // 1. Explicit BASE_URL environment variable (useful for frontend builds)
-      // 2. VERCEL_URL provided by Vercel (when present)
-      // 3. Use request headers (x-forwarded-proto / host) as a fallback
-      const proto = req.headers['x-forwarded-proto'] || req.protocol;
-      const host = req.get('host') || '';
-      let backendUrl = '';
-      if (process.env.BASE_URL) {
-        backendUrl = process.env.BASE_URL.replace(/\/$/, '');
-      } else if (process.env.VERCEL_URL) {
-        // VERCEL_URL contains hostname (e.g. project-xyz.vercel.app)
-        backendUrl = `${proto}://${process.env.VERCEL_URL}`;
-      } else if (host) {
-        backendUrl = `${proto}://${host}`;
-      }
+        // Determine backend base URL. Preference order:
+        // 1. Explicit BASE_URL environment variable (useful for frontend builds)
+        // 2. VERCEL_URL provided by Vercel (when present)
+        // 3. Use request headers (x-forwarded-proto / host) as a fallback
+        const proto = req.headers['x-forwarded-proto'] || req.protocol;
+        const host = req.get('host') || '';
+        let backendUrl = '';
+        if (process.env.BASE_URL) {
+          backendUrl = process.env.BASE_URL.replace(/\/$/, '');
+        } else if (process.env.VERCEL_URL) {
+          // VERCEL_URL contains hostname (e.g. project-xyz.vercel.app)
+          backendUrl = `${proto}://${process.env.VERCEL_URL}`;
+        } else if (host) {
+          backendUrl = `${proto}://${host}`;
+        }
 
         // Group by category
         const groupedByCategory = data.reduce((acc, item) => {
@@ -68,19 +71,19 @@ app.get('/api/menu', (req, res) => {
         // Process each category to ensure image fallback and format data
         for (const category in groupedByCategory) {
             const items = groupedByCategory[category];
-      // Format items and build full image URLs. If item.image is an absolute URL, keep it.
-      const formattedItems = items.map(item => ({
-        ...item,
-        price: parseFloat(item.price || 0),
-        badge: item.badge || '',
-        category: item.category || 'Other',
-        tags: item.tags || '',
-        image: item.image ? (/^https?:\/\//i.test(item.image) ? item.image : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`)) : null
-      }));
-            
+            // Format items and build full image URLs. If item.image is an absolute URL, keep it.
+            const formattedItems = items.map(item => ({
+                ...item,
+                price: parseFloat(item.price || 0),
+                badge: item.badge || '',
+                category: item.category || 'Other',
+                tags: item.tags || '',
+                image: item.image ? (/^https?:\/\//i.test(item.image) ? item.image : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`)) : null
+            }));
+
             allItemsFormatted.push(...formattedItems);
         }
-        
+
         res.json(allItemsFormatted);
     } catch (error) {
         console.error('Error reading menu data:', error);

@@ -1,13 +1,6 @@
-// Simple health endpoint for Vercel Serverless
-export default function handler(req, res) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(204).end();
-  }
+// api/index.js: re-export the canonical Express app defined in ../server.js
+// This avoids duplicate `app` declarations when running server.js locally
+// while allowing Vercel to import an app from the api folder if needed.
+import app from '../server.js';
 
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.status(200).json({ status: 'ok' });
-}
+export default app;

@@ -4,8 +4,8 @@
     { "src": "package.json", "use": "@vercel/static-build", "config": { "distDir": "public" } }
   ],
   "routes": [
-    { "src": "^/$", "dest": "/api/index.js" },
-    { "src": "/api/(.*)", "dest": "/api/$1" },
-    { "src": "/images/(.*)", "dest": "/images/$1" }
+    { "handle": "filesystem" },
+    { "src": "/api/(.*)", "dest": "/api/server.js" },
+    { "src": "/(.*)", "dest": "/api/server.js" }
   ]
 }
