@@ -58,6 +58,11 @@ app.get('/api/menu', (req, res) => {
           backendUrl = `${proto}://${host}`;
         }
 
+        // IMAGE_BASE_URL (optional) — if you host images externally (S3, Cloudinary)
+        // set IMAGE_BASE_URL to the base URL (no trailing slash). If present,
+        // image URLs will be built from IMAGE_BASE_URL/<filename>.
+        const imageBaseEnv = process.env.IMAGE_BASE_URL ? process.env.IMAGE_BASE_URL.replace(/\/$/, '') : '';
+
         // Group by category
         const groupedByCategory = data.reduce((acc, item) => {
             const category = item.category || 'Other';
@@ -78,7 +83,11 @@ app.get('/api/menu', (req, res) => {
                 badge: item.badge || '',
                 category: item.category || 'Other',
                 tags: item.tags || '',
-                image: item.image ? (/^https?:\/\//i.test(item.image) ? item.image : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`)) : null
+                image: item.image ? (
+                  /^https?:\/\//i.test(item.image)
+                    ? item.image
+                    : (imageBaseEnv ? `${imageBaseEnv}/${item.image}` : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`))
+                ) : null
             }));
 
             allItemsFormatted.push(...formattedItems);
