@@ -19,10 +19,8 @@ app.use(cors({ origin: CORS_ORIGIN }));
 app.set('trust proxy', true);
 
 // Serve static images. Prefer `public/images` (build output) then fall back to `images`.
-// Resolve project root (backend/) and prefer serving static files from there.
-const projectRoot = path.join(__dirname, '..');
-const publicImagesDir = path.join(projectRoot, 'public', 'images');
-const imagesDir = path.join(projectRoot, 'images');
+const publicImagesDir = path.join(__dirname, 'public', 'images');
+const imagesDir = path.join(__dirname, 'images');
 console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
 
 // Two static handlers: first serve from public/images, then from images
@@ -33,7 +31,7 @@ if (fs.existsSync(imagesDir)) {
   app.use('/images', express.static(imagesDir, { maxAge: '1d' }));
 }
 
-const dataDir = path.join(projectRoot, 'data');
+const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
 }
@@ -41,7 +39,7 @@ if (!fs.existsSync(dataDir)) {
 // Serve menu data
 app.get('/api/menu', (req, res) => {
     try {
-  const jsonData = fs.readFileSync(path.join(dataDir, 'menu.json'));
+        const jsonData = fs.readFileSync(path.join(__dirname, 'data', 'menu.json'));
         const data = JSON.parse(jsonData);
 
         // Determine backend base URL. Preference order:
