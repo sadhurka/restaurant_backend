@@ -49,13 +49,16 @@ app.get('/api/menu', (req, res) => {
         const proto = req.headers['x-forwarded-proto'] || req.protocol;
         const host = req.get('host') || '';
         let backendUrl = '';
+        // Prefer an explicit BASE_URL when provided (useful for frontend builds).
+        // Otherwise prefer the request host (so URLs match the domain the client used),
+        // and fall back to VERCEL_URL if nothing else is available.
         if (process.env.BASE_URL) {
           backendUrl = process.env.BASE_URL.replace(/\/$/, '');
+        } else if (host) {
+          backendUrl = `${proto}://${host}`;
         } else if (process.env.VERCEL_URL) {
           // VERCEL_URL contains hostname (e.g. project-xyz.vercel.app)
           backendUrl = `${proto}://${process.env.VERCEL_URL}`;
-        } else if (host) {
-          backendUrl = `${proto}://${host}`;
         }
 
         // IMAGE_BASE_URL (optional) — if you host images externally (S3, Cloudinary)
