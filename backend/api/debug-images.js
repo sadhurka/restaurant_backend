@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 
-// Debug endpoint to list files under public/images and report basic info.
-// Temporary helper for diagnosing missing images on deployment.
 export default function handler(req, res) {
   try {
     const projectRoot = path.join(process.cwd());

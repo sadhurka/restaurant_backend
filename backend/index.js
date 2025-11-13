@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
@@ -14,16 +13,12 @@ const app = express();
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 app.use(cors({ origin: CORS_ORIGIN }));
 
-// If running behind a proxy (Vercel, Render, etc.) trust proxy headers
-// so req.protocol and req.get('host') reflect the external URL.
 app.set('trust proxy', true);
 
-// Serve static images. Prefer `public/images` (build output) then fall back to `images`.
 const publicImagesDir = path.join(__dirname, 'public', 'images');
 const imagesDir = path.join(__dirname, 'images');
 console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
 
-// Two static handlers: first serve from public/images, then from images
 if (fs.existsSync(publicImagesDir)) {
   app.use('/images', express.static(publicImagesDir, { maxAge: '1d' }));
 }
@@ -41,29 +36,19 @@ app.get('/api/menu', (req, res) => {
     try {
         const jsonData = fs.readFileSync(path.join(__dirname, 'data', 'menu.json'));
         const data = JSON.parse(jsonData);
-
-        // Determine backend base URL. Preference order:
-        // 1. Explicit BASE_URL environment variable (useful for frontend builds)
-        // 2. VERCEL_URL provided by Vercel (when present)
-        // 3. Use request headers (x-forwarded-proto / host) as a fallback
         const proto = req.headers['x-forwarded-proto'] || req.protocol;
         const host = req.get('host') || '';
         let backendUrl = '';
-        // Prefer an explicit BASE_URL when provided (useful for frontend builds).
-        // Otherwise prefer the request host (so URLs match the domain the client used),
-        // and fall back to VERCEL_URL if nothing else is available.
+
         if (process.env.BASE_URL) {
           backendUrl = process.env.BASE_URL.replace(/\/$/, '');
         } else if (host) {
           backendUrl = `${proto}://${host}`;
         } else if (process.env.VERCEL_URL) {
-          // VERCEL_URL contains hostname (e.g. project-xyz.vercel.app)
+        
           backendUrl = `${proto}://${process.env.VERCEL_URL}`;
         }
 
-        // IMAGE_BASE_URL (optional) — if you host images externally (S3, Cloudinary)
-        // set IMAGE_BASE_URL to the base URL (no trailing slash). If present,
-        // image URLs will be built from IMAGE_BASE_URL/<filename>.
         const imageBaseEnv = process.env.IMAGE_BASE_URL ? process.env.IMAGE_BASE_URL.replace(/\/$/, '') : '';
 
         // Group by category
@@ -76,7 +61,6 @@ app.get('/api/menu', (req, res) => {
 
         const allItemsFormatted = [];
 
-        // Process each category to ensure image fallback and format data
         for (const category in groupedByCategory) {
             const items = groupedByCategory[category];
             // Format items and build full image URLs. If item.image is an absolute URL, keep it.
@@ -138,6 +122,4 @@ if (!IS_VERCEL && process.env.SKIP_START !== '1') {
 } else {
   console.log('Skipping local server start (Vercel or SKIP_START detected).');
 }
-
-// Export the Express app so serverless adapters or tests can import it.
 export default app;
