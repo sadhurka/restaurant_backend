@@ -114,9 +114,9 @@
   { "category": "MINERAL WATER", "title": "500 mL", "price": 190.00, "image": "food5.png" },
   { "category": "MINERAL WATER", "title": "1 L", "price": 290.00, "image": null },
   { "category": "MINERAL WATER", "title": "1.5 L", "price": 390.00, "image": null },
-  { "category": "MOCKTAIL", "title": "BLUE LAGOON", "price": 1400.00, "image": "food6.jpg" },
-  { "category": "MOCKTAIL", "title": "BLUE HAWAIION", "price": 1600.00, "image": null },
-  { "category": "MOCKTAIL", "title": "CATAMARAN SPECIAL", "price": 1600.00, "image": null },
-  { "category": "MOCKTAIL", "title": "SUNRISE", "price": 1800.00, "image": null },
-  { "category": "MOCKTAIL", "title": "CINDERELLA", "price": 1800.00, "image": null }
+  { "category": "MOCKTAIL", "title": "BLUE LAGOON", "price": 1400.00, "image": "food6.jpg", "description": "lime, lemonade/blue curacao" },
+  { "category": "MOCKTAIL", "title": "BLUE HAWAIION", "price": 1600.00, "image": null, "description": "Blue curacao, pineapple juice and coconut cream." },
+  { "category": "MOCKTAIL", "title": "CATAMARAN SPECIAL", "price": 1600.00, "image": null, "description": "Blue curacao, orange juice, club soda, lime juice and simple syrup." },
+  { "category": "MOCKTAIL", "title": "SUNRISE", "price": 1800.00, "image": null, "description": "Orange juice, Sprite, grenadine and simple syrup." },
+  { "category": "MOCKTAIL", "title": "CINDERELLA", "price": 1800.00, "image": null, "description": "Mixed fruit juices with grenadine and simple syrup." }
 ]

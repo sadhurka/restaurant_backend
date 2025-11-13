@@ -70,6 +70,10 @@ app.get('/api/menu', (req, res) => {
                 badge: item.badge || '',
                 category: item.category || 'Other',
                 tags: item.tags || '',
+                // Keep a canonical `description` field and also provide `desc` for
+                // any clients that expect the shorter key.
+                description: item.description || item.desc || null,
+                desc: item.description || item.desc || null,
                 image: item.image ? (
                   /^https?:\/\//i.test(item.image)
                     ? item.image
