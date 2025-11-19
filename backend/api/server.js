@@ -15,6 +15,26 @@ function safeJson(res, status, obj) {
 }
 
 export default async function handler(req, res) {
+  // Early detect browser/html requests that hit Vercel Deployment Protection
+  // and return a clear JSON instructing what to change (cannot bypass in code).
+  const accept = req.headers['accept'] || '';
+  const isBrowserHtmlRequest = accept.includes('text/html') || (req.headers['user-agent'] || '').toLowerCase().includes('mozilla');
+  if (isBrowserHtmlRequest) {
+    res.setHeader('content-type', 'application/json');
+    res.statusCode = 403;
+    res.end(JSON.stringify({
+      error: 'Deployment protected by Vercel Authentication (SSO / Password).',
+      message: 'Vercel has enabled Deployment Protection which shows an authentication page instead of your API JSON. To let clients load /menu directly either disable the protection for this deployment or use a protection bypass token as documented by Vercel.',
+      docs: 'https://vercel.com/docs/deployment-protection',
+      quick_hints: [
+        'In Vercel Project Settings -> Deployments -> Protection: disable or allow this route.',
+        'Or add a bypass token via Vercel MCP and call the URL with ?x-vercel-set-bypass-cookie=true&x-vercel-protection-bypass=<TOKEN>',
+        'For immediate testing: temporarily disable protection or whitelist 0.0.0.0/0 in Atlas to test DB reachability.'
+      ]
+    }));
+    return;
+  }
+
   const start = Date.now();
   console.log(`[serverless] ${req.method} ${req.url} - MONGODB_URI set? ${!!process.env.MONGODB_URI} uri: ${maskUri(process.env.MONGODB_URI)}`);
 
