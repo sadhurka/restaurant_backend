@@ -475,6 +475,14 @@ app.get('/debug/mongo', async (_req, res) => {
   }
 });
 
+// serve favicon if present, otherwise return 204 to silence browser 404s
+const faviconFile = path.join(__dirname, 'public', 'favicon.ico');
+if (fs.existsSync(faviconFile)) {
+  app.get('/favicon.ico', (_req, res) => res.sendFile(faviconFile));
+} else {
+  app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
+}
+
 // --- 404 handler ---
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
