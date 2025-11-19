@@ -471,17 +471,26 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// --- add global error handlers so deployment logs include uncaught errors ---
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
 // Replace simple listen with resilient startServer to handle EADDRINUSE
-function startServer(port = BASE_PORT, attempt = 0) {
-  const server = app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+function startServer(port = PORT, attempt = 0) {
+  const listenPort = Number(port) || 3000;
+  const server = app.listen(listenPort, () => {
+    console.log(`Server running on port ${listenPort}`);
   });
 
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE' && attempt < 5) {
       // Address in use, try next port
-      const nextPort = port + 1;
-      console.warn(`Port ${port} in use, trying next port ${nextPort}...`);
+      const nextPort = listenPort + 1;
+      console.warn(`Port ${listenPort} in use, trying next port ${nextPort}...`);
       setTimeout(() => startServer(nextPort, attempt + 1), 1000);
     } else {
       console.error('Failed to start server:', err);
