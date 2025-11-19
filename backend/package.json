@@ -5,8 +5,11 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "build": "node ./scripts/copy-images.js",
+    "build": "echo \"No build step configured (moved to extras)\"",
     "start": "node ./index.js",
+    "start:debug": "node --enable-source-maps --trace-warnings ./index.js",
+    "dev": "node --watch ./index.js",
+    "check": "node -e \"console.log('NODE:', process.version); console.log('PWD:', process.cwd()); console.log('PORT:', process.env.PORT || 'not set'); console.log('MONGODB_URI:', !!process.env.MONGODB_URI);\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,6 +17,12 @@
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^5.1.0"
-  }
+    "dotenv": "^16.0.0",
+    "express": "^5.1.0",
+    "mongodb": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "postinstall": "node -e \"console.log('Dependencies installed. Node:', process.version)\""
 }
