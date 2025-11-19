@@ -218,6 +218,16 @@ app.get('/menu', async (req, res) => {
     // Try MongoDB first if configured
     if (MONGODB_URI) {
       if (!mongoClient) await connectMongo();
+
+      // **MODIFIED**: If connect failed, return a clear error instead of falling back.
+      if (!mongoClient) {
+        return res.status(502).json({
+          error: 'Failed to connect to MongoDB. See lastMongoError for details.',
+          lastMongoError: lastMongoError || 'No specific error was captured. Check server logs.',
+          hint: 'Verify MONGODB_URI in your environment and check Atlas Network Access (IP Whitelist).'
+        });
+      }
+
       if (mongoClient) {
         const db = mongoClient.db(MONGODB_DB || undefined);
 
@@ -269,9 +279,9 @@ app.get('/menu', async (req, res) => {
           return res.json(formatted);
         } else {
           console.error('Mongo configured but no menu documents found. Check /debug/mongo for collection names and configuration.');
+          // **MODIFIED**: Also return an error here if data is null after successful connection
+          return res.status(404).json({ error: 'Database connected, but no menu documents were found in the specified collection.', collection: resolvedCollectionName });
         }
-      } else {
-        console.error('MONGODB_URI set but mongoClient is null after connect attempt.');
       }
     }
 
@@ -294,6 +304,16 @@ app.get('/api/menu', async (req, res) => {
     try {
         if (MONGODB_URI) {
           if (!mongoClient) await connectMongo();
+
+          // **MODIFIED**: If connect failed, return a clear error instead of falling back.
+          if (!mongoClient) {
+            return res.status(502).json({
+              error: 'Failed to connect to MongoDB. See lastMongoError for details.',
+              lastMongoError: lastMongoError || 'No specific error was captured. Check server logs.',
+              hint: 'Verify MONGODB_URI in your environment and check Atlas Network Access (IP Whitelist).'
+            });
+          }
+
           if (mongoClient) {
             const db = mongoClient.db(MONGODB_DB || undefined);
             let data = null;
@@ -358,9 +378,9 @@ app.get('/api/menu', async (req, res) => {
               return res.json(allItemsFormatted);
             } else {
               console.error('Mongo configured but no menu documents found. Check /debug/mongo for collection names and configuration.');
+              // **MODIFIED**: Also return an error here if data is null after successful connection
+              return res.status(404).json({ error: 'Database connected, but no menu documents were found in the specified collection.', collection: resolvedCollectionName });
             }
-          } else {
-            console.error('MONGODB_URI set but mongoClient is null after connect attempt.');
           }
         }
 
@@ -500,7 +520,7 @@ app.get('/auth/info', (req, res) => {
     notes: [
       'Obtain the bypass token via Vercel MCP or the Vercel dashboard (see docs).',
       'Replace <REPLACE_WITH_BYPASS_TOKEN> in the template and open the URL in your browser.',
-      'This endpoint only returns the template; it does not bypass protection itself.'
+      'This endpoint only returns the template; it does not bypass protection by itself.'
     ]
   });
 });

@@ -48,24 +48,17 @@ export default async function handler(req, res) {
     console.warn('Bypass cookie handler error (continuing):', e && e.stack ? e.stack : e);
   }
 
-  // Early detect browser/html requests that hit Vercel Deployment Protection
-  // and return a clear JSON instructing what to change (cannot bypass in code).
+  // Early detect browser navigation that would hit Vercel Deployment Protection.
+  // This should NOT block API calls (e.g., from fetch) which may also have a 'mozilla' user-agent.
   const accept = req.headers['accept'] || '';
-  const isBrowserHtmlRequest = accept.includes('text/html') || (req.headers['user-agent'] || '').toLowerCase().includes('mozilla');
-  if (isBrowserHtmlRequest) {
-    res.setHeader('content-type', 'application/json');
-    res.statusCode = 403;
-    res.end(JSON.stringify({
-      error: 'Deployment protected by Vercel Authentication (SSO / Password).',
-      message: 'Vercel has enabled Deployment Protection which shows an authentication page instead of your API JSON. To let clients load /menu directly either disable the protection for this deployment or use a protection bypass token as documented by Vercel.',
-      docs: 'https://vercel.com/docs/deployment-protection',
-      quick_hints: [
-        'In Vercel Project Settings -> Deployments -> Protection: disable or allow this route.',
-        'Or add a bypass token via Vercel MCP and call the URL with ?x-vercel-set-bypass-cookie=true&x-vercel-protection-bypass=<TOKEN>',
-        'For immediate testing: temporarily disable protection or whitelist 0.0.0.0/0 in Atlas to test DB reachability.'
-      ]
-    }));
-    return;
+  const isBrowserNavigation = accept.startsWith('text/html');
+
+  if (isBrowserNavigation) {
+    return safeJson(res, 403, {
+      error: 'Deployment may be protected by Vercel Authentication.',
+      message: 'This is an API endpoint. If you are seeing this in a browser, it might be because Vercel Deployment Protection is active. To access the API, you must either disable the protection or use a bypass token.',
+      docs: 'https://vercel.com/docs/deployment-protection'
+    });
   }
 
   const start = Date.now();
