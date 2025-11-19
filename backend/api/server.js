@@ -1,4 +1,4 @@
-import app, { connectMongo } from '../index.js';
+import { expressApp as app, connectMongo } from '../index.js';
 
 // small helper to mask URIs in logs
 function maskUri(uri) {

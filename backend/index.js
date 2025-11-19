@@ -15,37 +15,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// --- Robust CORS setup (env-driven) ---
-// Set CORS_ORIGIN to a specific origin in production (e.g. https://your-frontend.example.com).
-/// If not set, default to '*' for permissive behavior (suitable for testing).
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+// --- Replace hardcoded CORS usage with env-driven config and apply before routes ---
+const CORS_ORIGIN = process.env.CORS_ORIGIN || ''; // empty means no origin restriction by default
+// <-- added: allow configuring whether to send Access-Control-Allow-Credentials -->
 const CORS_ALLOW_CREDENTIALS = (process.env.CORS_ALLOW_CREDENTIALS === 'true') || false;
 
-// Use the cors package configured from env (when origin is '*' cors package accepts true to reflect request origin)
-if (CORS_ORIGIN === '*') {
-  app.use(cors({ origin: true, credentials: CORS_ALLOW_CREDENTIALS }));
+if (CORS_ORIGIN) {
+  app.use(cors({ origin: CORS_ORIGIN }));
 } else {
-  app.use(cors({ origin: CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
+  // if CORS_ORIGIN not set, allow all origins (explicit) to maintain previous behavior
+  app.use(cors());
 }
-
-// Ensure OPTIONS preflight is handled for all routes
-// use '/*' to avoid path-to-regexp parsing '*' as an invalid parameter
-app.options('/*', cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
-
-// Also add an explicit header middleware to guarantee headers on every response
-app.use((req, res, next) => {
-  const originValue = CORS_ORIGIN === '*' ? '*' : CORS_ORIGIN;
-  res.setHeader('Access-Control-Allow-Origin', originValue);
-  if (CORS_ALLOW_CREDENTIALS) {
-    // When using credentials, the Access-Control-Allow-Origin must NOT be '*'
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  // For preflight short-circuit
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
 
 const PORT = process.env.PORT || 3000;
 
@@ -471,24 +451,32 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// --- add global error handlers so deployment logs include uncaught errors ---
-process.on('unhandledRejection', (reason, p) => {
-  console.error('Unhandled Rejection at:', p, 'reason:', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+// --- Replace the OPTIONS route (caused path-to-regexp errors) with a middleware preflight handler ---
+/*
+app.options('*', cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
+*/
+// instead handle CORS preflight and headers in middleware (already added below earlier)
+app.use((req, res, next) => {
+  const originValue = CORS_ORIGIN === '*' ? '*' : CORS_ORIGIN;
+  res.setHeader('Access-Control-Allow-Origin', originValue);
+  if (CORS_ALLOW_CREDENTIALS) {
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
 });
 
-// Replace simple listen with resilient startServer to handle EADDRINUSE
-function startServer(port = PORT, attempt = 0) {
+// Replace startServer default to use PORT (was using BASE_PORT which is undefined)
+function startServer(port = Number(PORT) || 3000, attempt = 0) {
   const listenPort = Number(port) || 3000;
   const server = app.listen(listenPort, () => {
     console.log(`Server running on port ${listenPort}`);
   });
 
   server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE' && attempt < 5) {
-      // Address in use, try next port
+    if (err && err.code === 'EADDRINUSE' && attempt < 5) {
       const nextPort = listenPort + 1;
       console.warn(`Port ${listenPort} in use, trying next port ${nextPort}...`);
       setTimeout(() => startServer(nextPort, attempt + 1), 1000);
@@ -512,41 +500,9 @@ if (path.resolve(process.argv[1] || '') === __filename) {
   console.log('Express app imported (no local listener started).');
 }
 
-// export the express app for local usage / tests
-export { app as expressApp };
-
-// export connectMongo so serverless wrapper can ensure DB is connected
+// export the express app and connectMongo for serverless wrapper / local starter
+export const expressApp = app;
 export { connectMongo };
 
-// Default export: safe async handler wrapper for serverless (Vercel).
-// Ensure connectMongo is attempted (non-fatal) before handling the request,
-// and catch any errors so the function doesn't crash with an unhandled exception.
-export default async function handler(req, res) {
-  try {
-    if (MONGODB_URI) {
-      try {
-        // try connecting once (connectMongo is idempotent and quick when already connected)
-        await connectMongo().catch(err => {
-          // log and continue — don't let DB connection failure crash the function
-          console.warn('connectMongo() failed inside serverless handler (continuing):', err && (err.stack || err));
-        });
-      } catch (err) {
-        console.warn('Unexpected error while attempting connectMongo in handler:', err && (err.stack || err));
-      }
-    }
-
-    // Delegate to Express app
-    return app(req, res);
-  } catch (err) {
-    // Defensive logging — visible in Vercel function logs
-    console.error('Serverless handler caught error:', err && (err.stack || err));
-    try {
-      res.statusCode = 500;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Internal server error' }));
-    } catch (sendErr) {
-      console.error('Failed to send error response from handler:', sendErr && (sendErr.stack || sendErr));
-    }
-  }
-}
+// (remove any default export to avoid circular/default-import issues)
 
