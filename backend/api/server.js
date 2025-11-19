@@ -1,5 +1,3 @@
-import { expressApp as app, connectMongo, getLastMongoError } from '../index.js';
-
 // small helper to mask URIs in logs
 function maskUri(uri) {
   if (!uri) return '';
@@ -12,7 +10,6 @@ function safeJson(res, status, obj) {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify(obj));
   } catch (e) {
-    // best-effort: if we can't send JSON, fallback to plain text
     try { res.statusCode = status; res.end(String(obj)); } catch (_) {}
   }
 }
@@ -29,45 +26,54 @@ export default async function handler(req, res) {
     return;
   }
 
+  let mod;
   try {
-    // attempt connection (connectMongo is idempotent)
-    await connectMongo().catch(err => {
-      console.error('[serverless] connectMongo error (caught):', err && (err.stack || err));
-      // let outer catch return diagnostics below
-      throw err;
+    // Dynamic import so import-time errors are caught and returned
+    mod = await import('../index.js');
+  } catch (impErr) {
+    console.error('[serverless] import ../index.js failed:', impErr && (impErr.stack || impErr));
+    safeJson(res, 500, {
+      error: 'Failed to import backend module',
+      reason: impErr && (impErr.message || String(impErr)),
+      stack: impErr && (impErr.stack || null),
+      hint: 'Check Vercel function logs for import-time errors (missing files, syntax errors, or unsupported APIs).'
     });
+    return;
+  }
+
+  const { expressApp: app, connectMongo, getLastMongoError } = mod;
+
+  // attempt DB connection and return diagnostics if it fails
+  try {
+    await connectMongo();
   } catch (err) {
+    console.error('[serverless] connectMongo() threw:', err && (err.stack || err));
     const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
     safeJson(res, 502, {
       error: 'Failed to connect to MongoDB from serverless function',
       reason: err && (err.message || String(err)),
       lastMongoError: last || null,
-      hint: 'Check MONGODB_URI, MONGODB_DB, MONGODB_COLLECTION and Atlas network access (IP or VPC settings).'
+      hint: 'Check MONGODB_URI, MONGODB_DB, MONGODB_COLLECTION and Atlas network access (IP whitelist / VPC).'
     });
-    console.error('[serverless] connect failed, returning 502', { reason: err && err.stack, lastMongoError: last });
     return;
   }
 
-  // If DB connection succeeded but app can't find any collection, make that visible:
+  // Delegate to Express app with defensive error handling
   try {
-    // call Express app and let it handle the response
     const result = app(req, res);
-
-    // If the app returned a Promise, await it to capture thrown errors
     if (result && typeof result.then === 'function') {
       await result;
     }
 
-    // If response already sent, just log timing
+    // If response not sent by Express, ensure we close connection (best-effort)
     if (!res.writableEnded) {
-      // ensure we do not leave request hanging
-      // let express handle sending; if still not sent we'll not force a body here
+      try { res.end(); } catch (_) { /* ignore */ }
     }
+
     console.log(`[serverless] ${req.method} ${req.url} handled in ${Date.now() - start}ms`);
   } catch (err) {
     console.error('[serverless] handler caught error:', err && (err.stack || err));
     const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
-    // If response not sent, provide diagnostic JSON
     if (!res.writableEnded) {
       safeJson(res, 500, {
         error: 'Server handler error',
