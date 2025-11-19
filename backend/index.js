@@ -59,6 +59,26 @@ const MONGODB_URI = process.env.MONGODB_URI || '';
 const MONGODB_DB = process.env.MONGODB_DB || 'menu';
 const MONGODB_COLLECTION = process.env.MONGODB_COLLECTION || 'menudata';
 
+// new: allow tweaking TLS/timeout behavior from environment for debugging
+const MONGODB_TLS = (process.env.MONGODB_TLS || 'auto').toLowerCase(); // 'auto'|'true'|'false'
+const MONGODB_TLS_ALLOW_INVALID = process.env.MONGODB_TLS_ALLOW_INVALID === 'true';
+const MONGODB_SERVER_SELECTION_TIMEOUT_MS = Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS) || 5000;
+
+// build client options
+function getMongoClientOptions() {
+	// default: follow SRV/TLS behavior from connection string; set explicit options for debugging
+	const opts = {
+		serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS
+	};
+	if (MONGODB_TLS === 'true' || MONGODB_TLS === 'false') {
+		opts.tls = MONGODB_TLS === 'true';
+	}
+	if (MONGODB_TLS_ALLOW_INVALID) {
+		opts.tlsAllowInvalidCertificates = true;
+	}
+	return opts;
+}
+
 // small helper to mask URIs in logs
 function maskUri(uri) {
   if (!uri) return '';
@@ -88,8 +108,10 @@ async function connectMongo(force = false) {
     while (attempt < maxAttempts) {
       attempt++;
       try {
-        // short serverSelectionTimeout so failures return quickly
-        mongoClient = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+        // use env-driven options
+        const clientOpts = getMongoClientOptions();
+        console.log(`Mongo: connecting (attempt ${attempt}) serverSelectionTimeoutMS=${clientOpts.serverSelectionTimeoutMS} tls=${clientOpts.tls===undefined?'auto':clientOpts.tls} tlsAllowInvalidCertificates=${!!clientOpts.tlsAllowInvalidCertificates}`);
+        mongoClient = new MongoClient(MONGODB_URI, clientOpts);
         await mongoClient.connect();
         // ping
         await mongoClient.db().command({ ping: 1 }).catch(() => {});
@@ -139,8 +161,17 @@ async function connectMongo(force = false) {
         menuCollection = null;
         resolvedCollectionName = null;
       } catch (err) {
+        // improved error diagnostics
         lastErr = err;
-        lastMongoError = (err && err.stack) ? err.stack : String(err);
+        const diag = {
+          message: err && err.message,
+          name: err && err.name,
+          code: err && err.code,
+          codeName: err && err.codeName,
+          stack: err && err.stack
+        };
+        lastMongoError = JSON.stringify(diag, Object.keys(diag), 2);
+        console.error(`Mongo connect attempt ${attempt} failed:`, diag);
         try { if (mongoClient) await mongoClient.close(); } catch (_) {}
         mongoClient = null;
         menuCollection = null;
@@ -155,7 +186,7 @@ async function connectMongo(force = false) {
     console.error('Mongo connection failed after attempts:', lastErr && lastErr.message ? lastErr.message : lastErr);
   } catch (err) {
     lastMongoError = (err && err.stack) ? err.stack : String(err);
-    console.error('connectMongo unexpected error:', err);
+    console.error('connectMongo unexpected error:', err && (err.stack || err));
     try { if (mongoClient) await mongoClient.close(); } catch (_) {}
     mongoClient = null;
     menuCollection = null;
@@ -400,112 +431,62 @@ async function fetchMenuFromDB(db) {
 // new debug endpoint: attempt a direct short connection and return error stack for diagnosis
 app.get('/debug/connect', async (_req, res) => {
   if (!MONGODB_URI) return res.status(400).json({ ok: false, error: 'MONGODB_URI not set' });
+  let testClient;
   try {
-    const testClient = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+    testClient = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS) || 5000, tlsAllowInvalidCertificates: process.env.MONGODB_TLS_ALLOW_INVALID === 'true' });
     await testClient.connect();
     // basic info if possible
     let info = null;
     try {
       const serverStatus = await testClient.db().admin().serverStatus().catch(() => null);
       if (serverStatus) info = { host: serverStatus.host || null, uptime: serverStatus.uptime || null };
-    } catch (_) {
-      // ignore non-critical errors reading server status
-    }
+      // also list collections for quick sanity
+      try {
+        const cols = await testClient.db(MONGODB_DB || undefined).listCollections().toArray().catch(() => null);
+        if (cols && Array.isArray(cols)) info = { ...(info||{}), collections: cols.map(c => c.name) };
+      } catch (_) { /* ignore */ }
+    } catch (_) { /* ignore non-critical serverStatus errors */ }
     try { await testClient.close(); } catch (_) {}
     return res.json({ ok: true, info });
   } catch (err) {
     const stack = err && err.stack ? err.stack : String(err);
     // store last error for /debug/mongo visibility
     lastMongoError = stack;
+    try { if (testClient) await testClient.close(); } catch (_) {}
     return res.status(500).json({ ok: false, error: String(err), stack });
   }
 });
 
 // --- debug /mongo endpoint: show last MongoDB error and collection info ---
-app.get('/debug/mongo', async (req, res) => {
-  res.json({
-    ok: true,
-    lastError: lastMongoError,
-    mongoClient: !!mongoClient,
-    menuCollection: resolvedCollectionName || menuCollection ? true : false,
-    collections: [],
-    env: {
-      MONGODB_URI: maskUri(MONGODB_URI),
-      MONGODB_DB,
-      MONGODB_COLLECTION,
-      PORT,
-      NODE_ENV: process.env.NODE_ENV || 'development',
-      CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
+app.get('/debug/mongo', async (_req, res) => {
+  try {
+    let info = { lastError: null, collections: [] };
+    if (mongoClient && resolvedCollectionName) {
+      info = {
+        lastError: lastMongoError,
+        collections: (await mongoClient.db(MONGODB_DB || undefined).listCollections().toArray()).map(c => c.name)
+      };
+    } else {
+      info.lastError = lastMongoError;
     }
-  });
+    res.json({ ok: true, info });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
 });
 
 // --- 404 handler ---
-app.use((req, res) => {
+app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
 // --- error handler ---
-// replace or augment existing error handler with a JSON-safe responder
-app.use((err, req, res, _next) => {
-  console.error('Unhandled error:', err && (err.stack || err));
-  if (!res.headersSent) {
-    res.status(500).json({ error: 'Internal server error', detail: String(err && (err.message || err)) });
-  } else {
-    // if headers already sent, just end
-    try { res.end(); } catch (_) {}
-  }
+app.use((err, _req, res, _next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
-// --- Replace the OPTIONS route (caused path-to-regexp errors) with a middleware preflight handler ---
-/*
-app.options('*', cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
-*/
-// instead handle CORS preflight and headers in middleware (already added below earlier)
-app.use((req, res, next) => {
-  const originValue = CORS_ORIGIN === '*' ? '*' : CORS_ORIGIN;
-  res.setHeader('Access-Control-Allow-Origin', originValue);
-  if (CORS_ALLOW_CREDENTIALS) {
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
-
-// Replace startServer default to use PORT (was using BASE_PORT which is undefined)
-function startServer(port = Number(PORT) || 3000, attempt = 0) {
-  const listenPort = Number(port) || 3000;
-  const server = app.listen(listenPort, () => {
-    console.log(`Server running on port ${listenPort}`);
-  });
-
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE' && attempt < 5) {
-      const nextPort = listenPort + 1;
-      console.warn(`Port ${listenPort} in use, trying next port ${nextPort}...`);
-      setTimeout(() => startServer(nextPort, attempt + 1), 1000);
-    } else {
-      console.error('Failed to start server:', err);
-      process.exit(1);
-    }
-  });
-}
-
-// --- start server only when run directly, not when imported by Vercel ---
-if (path.resolve(process.argv[1] || '') === __filename) {
-  (async () => {
-    if (MONGODB_URI) {
-      await connectMongo().catch(() => {});
-      await new Promise(r => setTimeout(r, 100));
-    }
-    startServer();
-  })();
-} else {
-  console.log('Express app imported (no local listener started).');
-}
-
+// --- other middleware / startServer / exports ---
 // export the express app and connectMongo for serverless wrapper / local starter
 export const expressApp = app;
 export { connectMongo };
