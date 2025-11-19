@@ -10,7 +10,9 @@
     "start:debug": "node --enable-source-maps --trace-warnings ./index.js",
     "dev": "node --watch ./index.js",
     "check": "node -e \"console.log('NODE:', process.version); console.log('PWD:', process.cwd()); console.log('PORT:', process.env.PORT || 'not set'); console.log('MONGODB_URI:', !!process.env.MONGODB_URI);\"",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "diag:env": "node -e \"console.log('MONGODB_URI set:',!!process.env.MONGODB_URI);console.log('MONGODB_DB:',process.env.MONGODB_DB);console.log('MONGODB_COLLECTION:',process.env.MONGODB_COLLECTION);console.log('FORCE_VERBOSE:',process.env.FORCE_VERBOSE||'');\"",
+    "verify:env": "node -e \"const req=['MONGODB_URI','MONGODB_DB','MONGODB_COLLECTION'];const miss=req.filter(v=>!process.env[v]);if(miss.length){console.error('Missing env vars:',miss.join(','));process.exit(1);}console.log('All required env vars present.');\""
   },
   "keywords": [],
   "author": "",
@@ -19,7 +21,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
     "express": "^5.1.0",
-    "mongodb": "^5.0.0"
+    "mongodb": "^6.3.0"
   },
   "engines": {
     "node": "22.x"

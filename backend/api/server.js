@@ -92,6 +92,17 @@ export default async function handler(req, res) {
   // attempt DB connection and return diagnostics if it fails
   try {
     await connectMongo();
+    try {
+      // lightweight diagnostics after connect
+      const mod2 = await import('../index.js');
+      const dbName = process.env.MONGODB_DB;
+      const clientConnected = typeof mod2.connectMongo === 'function';
+      if (clientConnected && process.env.LOG_MENU_DIAG === 'true') {
+        const { expressApp: _app } = mod2;
+        // Fire internal request to /debug/collections (non-blocking)
+        fetch(`http://localhost/debug/collections`).catch(()=>{});
+      }
+    } catch {}
   } catch (err) {
     console.error('[serverless] connectMongo() threw:', err && (err.stack || err));
     const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
