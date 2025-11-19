@@ -483,3 +483,6 @@ if (path.resolve(process.argv[1] || '') === __filename) {
 // export the app so serverless wrapper can forward requests
 export default app;
 
+// export connectMongo so serverless wrapper can ensure DB is connected
+export { connectMongo };
+
