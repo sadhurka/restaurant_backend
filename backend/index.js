@@ -79,6 +79,39 @@ function getMongoClientOptions() {
 	return opts;
 }
 
+// --- added: helpers to normalize docs and coerce numeric values ---
+function toNumber(val) {
+  if (val == null) return 0;
+  if (typeof val === 'number') return val;
+  if (typeof val === 'object' && typeof val.toString === 'function') {
+    const s = val.toString();
+    const n = parseFloat(s);
+    return Number.isNaN(n) ? 0 : n;
+  }
+  const n = parseFloat(val);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function normalizeMenuDocs(docs) {
+  if (!Array.isArray(docs)) return [];
+  const looksLikeItem = (o) => o && (o.name || o.title) && (o.price != null || o.image || o.description || o.desc);
+  if (docs.length && looksLikeItem(docs[0])) return docs;
+
+  const items = [];
+  for (const d of docs) {
+    if (Array.isArray(d?.items)) items.push(...d.items);
+    if (Array.isArray(d?.data)) items.push(...d.data);
+    if (Array.isArray(d?.menu)) items.push(...d.menu);
+    if (Array.isArray(d?.categories)) {
+      for (const c of d.categories) {
+        if (Array.isArray(c?.items)) items.push(...c.items);
+      }
+    }
+  }
+  return items;
+}
+// --- end added ---
+
 // small helper to mask URIs in logs
 function maskUri(uri) {
   if (!uri) return '';
@@ -261,9 +294,19 @@ app.get('/menu', async (req, res) => {
 
           const imageBaseEnv = process.env.IMAGE_BASE_URL ? process.env.IMAGE_BASE_URL.replace(/\/$/, '') : '';
 
-          const formatted = data.map(item => ({
+          // --- changed: normalize docs to flat items and format them ---
+          const items = normalizeMenuDocs(data);
+          if (!items.length) {
+            return res.status(404).json({
+              error: 'No menu items found in MongoDB. Documents exist but did not match expected item shapes.',
+              collection: resolvedCollectionName,
+              hint: 'Ensure your documents are either item documents or contain arrays: items/data/menu/categories[].items.'
+            });
+          }
+
+          const formatted = items.map(item => ({
             ...item,
-            price: parseFloat(item.price || 0),
+            price: toNumber(item.price),
             badge: item.badge || '',
             category: item.category || 'Other',
             tags: item.tags || '',
@@ -275,6 +318,7 @@ app.get('/menu', async (req, res) => {
                 : (imageBaseEnv ? `${imageBaseEnv}/${item.image}` : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`))
             ) : null
           }));
+          // --- end changed ---
 
           return res.json(formatted);
         } else {
@@ -345,35 +389,31 @@ app.get('/api/menu', async (req, res) => {
 
               const imageBaseEnv = process.env.IMAGE_BASE_URL ? process.env.IMAGE_BASE_URL.replace(/\/$/, '') : '';
 
-              // Group by category and format
-              const groupedByCategory = data.reduce((acc, item) => {
-                  const category = item.category || 'Other';
-                  if (!acc[category]) acc[category] = [];
-                  acc[category].push(item);
-                  return acc;
-              }, {});
-
-              const allItemsFormatted = [];
-
-              for (const category in groupedByCategory) {
-                  const items = groupedByCategory[category];
-                  const formattedItems = items.map(item => ({
-                      ...item,
-                      price: parseFloat(item.price || 0),
-                      badge: item.badge || '',
-                      category: item.category || 'Other',
-                      tags: item.tags || '',
-                      description: item.description || item.desc || null,
-                      desc: item.description || item.desc || null,
-                      image: item.image ? (
-                        /^https?:\/\//i.test(item.image)
-                          ? item.image
-                          : (imageBaseEnv ? `${imageBaseEnv}/${item.image}` : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`))
-                      ) : null
-                  }));
-
-                  allItemsFormatted.push(...formattedItems);
+              // --- changed: normalize docs first, then format
+              const items = normalizeMenuDocs(data);
+              if (!items.length) {
+                return res.status(404).json({
+                  error: 'No menu items found in MongoDB. Documents exist but did not match expected item shapes.',
+                  collection: resolvedCollectionName,
+                  hint: 'Ensure your documents are either item documents or contain arrays: items/data/menu/categories[].items.'
+                });
               }
+
+              const allItemsFormatted = items.map(item => ({
+                ...item,
+                price: toNumber(item.price),
+                badge: item.badge || '',
+                category: item.category || 'Other',
+                tags: item.tags || '',
+                description: item.description || item.desc || null,
+                desc: item.description || item.desc || null,
+                image: item.image ? (
+                  /^https?:\/\//i.test(item.image)
+                    ? item.image
+                    : (imageBaseEnv ? `${imageBaseEnv}/${item.image}` : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`))
+                ) : null
+              }));
+              // --- end changed
 
               return res.json(allItemsFormatted);
             } else {
