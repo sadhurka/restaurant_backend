@@ -160,9 +160,6 @@ async function connectMongo(force = false) {
   }
 }
 
-// Start connecting in background immediately
-connectMongo().catch(e => console.warn('Initial connectMongo error:', e));
-
 // helper to load fallback menu file if present
 function loadFallbackMenu() {
   if (!fs.existsSync(fallbackMenuFile)) return null;
@@ -451,15 +448,38 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// --- start server ---
-async function startServer() {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+// Replace simple listen with resilient startServer to handle EADDRINUSE
+function startServer(port = BASE_PORT, attempt = 0) {
+  const server = app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE' && attempt < 5) {
+      // Address in use, try next port
+      const nextPort = port + 1;
+      console.warn(`Port ${port} in use, trying next port ${nextPort}...`);
+      setTimeout(() => startServer(nextPort, attempt + 1), 1000);
+    } else {
+      console.error('Failed to start server:', err);
+      process.exit(1);
+    }
   });
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// --- start server only when run directly, not when imported by Vercel ---
+if (path.resolve(process.argv[1] || '') === __filename) {
+  (async () => {
+    if (MONGODB_URI) {
+      await connectMongo().catch(() => {});
+      await new Promise(r => setTimeout(r, 100));
+    }
+    startServer();
+  })();
+} else {
+  console.log('Express app imported (no local listener started).');
+}
+
+// export the app so serverless wrapper can forward requests
+export default app;
 
