@@ -512,9 +512,30 @@ if (path.resolve(process.argv[1] || '') === __filename) {
   console.log('Express app imported (no local listener started).');
 }
 
-// export the app so serverless wrapper can forward requests
-export default app;
+// export the express app for local usage / tests
+export { app as expressApp };
 
 // export connectMongo so serverless wrapper can ensure DB is connected
 export { connectMongo };
+
+// Default export: safe handler wrapper for serverless (Vercel).
+// This prevents the function from crashing on unexpected synchronous errors
+// and ensures the invocation returns a proper HTTP response with logs.
+export default function handler(req, res) {
+  try {
+    // Express apps are callable as functions (req, res, next)
+    return app(req, res);
+  } catch (err) {
+    // Defensive logging — visible in Vercel function logs
+    console.error('Serverless handler caught error:', err && (err.stack || err));
+    try {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    } catch (sendErr) {
+      // nothing more to do if sending the error fails
+      console.error('Failed to send error response:', sendErr && (sendErr.stack || sendErr));
+    }
+  }
+}
 
