@@ -518,12 +518,24 @@ export { app as expressApp };
 // export connectMongo so serverless wrapper can ensure DB is connected
 export { connectMongo };
 
-// Default export: safe handler wrapper for serverless (Vercel).
-// This prevents the function from crashing on unexpected synchronous errors
-// and ensures the invocation returns a proper HTTP response with logs.
-export default function handler(req, res) {
+// Default export: safe async handler wrapper for serverless (Vercel).
+// Ensure connectMongo is attempted (non-fatal) before handling the request,
+// and catch any errors so the function doesn't crash with an unhandled exception.
+export default async function handler(req, res) {
   try {
-    // Express apps are callable as functions (req, res, next)
+    if (MONGODB_URI) {
+      try {
+        // try connecting once (connectMongo is idempotent and quick when already connected)
+        await connectMongo().catch(err => {
+          // log and continue — don't let DB connection failure crash the function
+          console.warn('connectMongo() failed inside serverless handler (continuing):', err && (err.stack || err));
+        });
+      } catch (err) {
+        console.warn('Unexpected error while attempting connectMongo in handler:', err && (err.stack || err));
+      }
+    }
+
+    // Delegate to Express app
     return app(req, res);
   } catch (err) {
     // Defensive logging — visible in Vercel function logs
@@ -533,8 +545,7 @@ export default function handler(req, res) {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Internal server error' }));
     } catch (sendErr) {
-      // nothing more to do if sending the error fails
-      console.error('Failed to send error response:', sendErr && (sendErr.stack || sendErr));
+      console.error('Failed to send error response from handler:', sendErr && (sendErr.stack || sendErr));
     }
   }
 }
