@@ -515,5 +515,6 @@ export function getLastMongoError() {
 	return lastMongoError;
 }
 
-// (remove any default export to avoid circular/default-import issues)
+// Ensure a default export is present for environments that expect it (Vercel)
+export default app;
 
