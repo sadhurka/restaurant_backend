@@ -29,7 +29,8 @@ if (CORS_ORIGIN === '*') {
 }
 
 // Ensure OPTIONS preflight is handled for all routes
-app.options('*', cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
+// use '/*' to avoid path-to-regexp parsing '*' as an invalid parameter
+app.options('/*', cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
 
 // Also add an explicit header middleware to guarantee headers on every response
 app.use((req, res, next) => {
