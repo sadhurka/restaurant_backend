@@ -30,7 +30,7 @@ const PORT = process.env.PORT || 3000;
 const dataDir = path.join(__dirname, 'data');
 const fallbackMenuFile = path.join(dataDir, 'menu.json');
 
-// removed automatic directory creation to avoid adding files while running
+// removed automatic creation of data directory to avoid adding files while running
 // (If you want a local fallback, create data/menu.json manually — the server will read it if present.)
 console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
 
@@ -510,20 +510,20 @@ function startServer(port = BASE_PORT, attempt = 0) {
   });
 }
 
-// Ensure server waits a short time for initial DB connect before listening
-const IS_VERCEL = !!process.env.VERCEL;
-if (!IS_VERCEL && process.env.SKIP_START !== '1') {
+// Replace previous auto-start logic with "start only when executed directly".
+// If this module is imported (e.g. by Vercel serverless), don't call app.listen().
+if (path.resolve(process.argv[1] || '') === __filename) {
   (async () => {
-    // Wait for an initial connection attempt (but don't block too long)
     if (MONGODB_URI) {
       await connectMongo().catch(() => {});
-      // give a small grace period for async resolution
+      // small grace period for async resolution
       await new Promise(r => setTimeout(r, 100));
     }
     startServer();
   })();
 } else {
-  console.log('Skipping local server start (Vercel or SKIP_START detected).');
+  // Imported as a module (serverless). Do not start a listener here.
+  console.log('Express app imported (no local server started).');
 }
 
 export default app;
