@@ -446,9 +446,15 @@ app.use((req, res) => {
 });
 
 // --- error handler ---
+// replace or augment existing error handler with a JSON-safe responder
 app.use((err, req, res, _next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+  console.error('Unhandled error:', err && (err.stack || err));
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error', detail: String(err && (err.message || err)) });
+  } else {
+    // if headers already sent, just end
+    try { res.end(); } catch (_) {}
+  }
 });
 
 // --- Replace the OPTIONS route (caused path-to-regexp errors) with a middleware preflight handler ---
