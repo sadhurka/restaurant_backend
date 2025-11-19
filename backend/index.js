@@ -504,5 +504,10 @@ if (path.resolve(process.argv[1] || '') === __filename) {
 export const expressApp = app;
 export { connectMongo };
 
+// add getter so serverless wrapper can report the last Mongo error
+export function getLastMongoError() {
+	return lastMongoError;
+}
+
 // (remove any default export to avoid circular/default-import issues)
 
