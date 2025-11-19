@@ -15,6 +15,12 @@ function safeJson(res, status, obj) {
 }
 
 export default async function handler(req, res) {
+  // --- Add: Log incoming Authorization header for 401 debugging ---
+  const authHeader = req.headers.authorization || null;
+  const maskedAuth = authHeader ? `${authHeader.substring(0, 12)}...` : 'Not Present';
+  console.log(`[serverless] Request to ${req.url}. Authorization header: ${maskedAuth}`);
+  // --- End added code ---
+
   // --- Add: support Vercel deployment-protection bypass flow ---
   try {
     const host = req.headers.host || 'localhost';
