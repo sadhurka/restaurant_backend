@@ -507,3 +507,57 @@ export function getLastMongoError() {
 // Ensure a default export is present for environments that expect it (Vercel)
 export default app;
 
+// --- Add: startServer for local runs (do not run when imported by Vercel) ---
+function startServer(port = Number(PORT) || 3000, attempt = 0) {
+  const listenPort = Number(port) || 3000;
+  const server = app.listen(listenPort, () => {
+    console.log(`Server running on port ${listenPort}`);
+  });
+
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE' && attempt < 5) {
+      const nextPort = listenPort + 1;
+      console.warn(`Port ${listenPort} in use, trying next port ${nextPort}...`);
+      setTimeout(() => startServer(nextPort, attempt + 1), 500);
+      return;
+    }
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+
+  // graceful shutdown helpers for local dev
+  const shutdown = async () => {
+    try {
+      console.log('Shutting down server...');
+      server.close(() => {
+        console.log('HTTP server closed.');
+        process.exit(0);
+      });
+      if (mongoClient) {
+        try { await mongoClient.close(); } catch (_) {}
+      }
+    } catch (e) {
+      console.error('Error during shutdown:', e);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+// Start server only when executed directly (node index.js), not when imported by Vercel
+if (path.resolve(process.argv[1] || '') === __filename) {
+  (async () => {
+    // optional initial DB connect for local runs (non-blocking if it fails)
+    if (MONGODB_URI) {
+      await connectMongo().catch(err => console.warn('Initial connectMongo error (ignored):', err && (err.stack || err)));
+      // small grace period
+      await new Promise(r => setTimeout(r, 100));
+    }
+    startServer();
+  })();
+} else {
+  console.log('Express app imported (no local listener started).');
+}
+
