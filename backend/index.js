@@ -30,6 +30,11 @@ const PORT = process.env.PORT || 3000;
 const dataDir = path.join(__dirname, 'data');
 const fallbackMenuFile = path.join(dataDir, 'menu.json');
 
+// --- Add: define image dirs before they're referenced to avoid ReferenceError ---
+const publicImagesDir = path.join(__dirname, 'public', 'images');
+const imagesDir = path.join(__dirname, 'images');
+// --- end added code ---
+
 // removed automatic creation of data directory to avoid adding files while running
 // (If you want a local fallback, create data/menu.json manually — the server will read it if present.)
 console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
@@ -403,8 +408,10 @@ app.get('/debug/connect', async (_req, res) => {
     try {
       const serverStatus = await testClient.db().admin().serverStatus().catch(() => null);
       if (serverStatus) info = { host: serverStatus.host || null, uptime: serverStatus.uptime || null };
-    } catch (_) {}
-    await testClient.close();
+    } catch (_) {
+      // ignore non-critical errors reading server status
+    }
+    try { await testClient.close(); } catch (_) {}
     return res.json({ ok: true, info });
   } catch (err) {
     const stack = err && err.stack ? err.stack : String(err);
@@ -414,116 +421,45 @@ app.get('/debug/connect', async (_req, res) => {
   }
 });
 
-// include lastMongoError in /debug/mongo response (replace the previous /debug/mongo block output)
-app.get('/debug/mongo', async (_req, res) => {
-  if (!MONGODB_URI) return res.json({ connected: false, reason: 'MONGODB_URI not set' });
-  try {
-    if (!mongoClient) await connectMongo();
-    let collections = null;
-    try {
-      const db = mongoClient ? mongoClient.db(MONGODB_DB || undefined) : null;
-      collections = db ? (await db.listCollections().toArray()).map(c => c.name) : `no client`;
-    } catch (err) {
-      collections = `failed to list collections: ${String(err)}`;
+// --- debug /mongo endpoint: show last MongoDB error and collection info ---
+app.get('/debug/mongo', async (req, res) => {
+  res.json({
+    ok: true,
+    lastError: lastMongoError,
+    mongoClient: !!mongoClient,
+    menuCollection: resolvedCollectionName || menuCollection ? true : false,
+    collections: [],
+    env: {
+      MONGODB_URI: maskUri(MONGODB_URI),
+      MONGODB_DB,
+      MONGODB_COLLECTION,
+      PORT,
+      NODE_ENV: process.env.NODE_ENV || 'development',
+      CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
     }
-    return res.json({
-      connected: !!mongoClient,
-      db: MONGODB_DB || null,
-      collectionConfigured: MONGODB_COLLECTION || null,
-      collectionResolved: resolvedCollectionName || null,
-      menuCollectionExists: !!menuCollection,
-      collections,
-      lastMongoError: lastMongoError ? (typeof lastMongoError === 'string' ? lastMongoError : String(lastMongoError)) : null
-    });
-  } catch (err) {
-    return res.status(500).json({ connected: false, error: String(err) });
-  }
-});
-
-// basic error handler
-app.use((err, _req, res, _next) => {
-	console.error(err);
-	res.status(500).json({ error: 'Internal server error' });
-});
-
-app.set('trust proxy', true);
-
-// Unchanged items endpoints but ensure they check mongoClient
-app.get('/items', async (req, res) => {
-  try {
-    if (!mongoClient) {
-      if (MONGODB_URI) await connectMongo().catch(() => {});
-    }
-    if (!mongoClient) {
-      return res.status(503).json({ error: 'DB not connected. Ensure MONGODB_URI/MONGODB_DB are correct and check /debug/mongo' });
-    }
-    const db = mongoClient.db(MONGODB_DB || undefined);
-    const items = await db.collection('items').find().toArray();
-    res.json(items);
-  } catch (err) {
-    console.error('/items error:', err);
-    res.status(500).json({ error: 'Failed to read items' });
-  }
-});
-
-app.post('/items', async (req, res) => {
-  try {
-    if (!mongoClient) {
-      if (MONGODB_URI) await connectMongo().catch(() => {});
-    }
-    if (!mongoClient) {
-      return res.status(503).json({ error: 'DB not connected. Ensure MONGODB_URI/MONGODB_DB are correct and check /debug/mongo' });
-    }
-    const db = mongoClient.db(MONGODB_DB || undefined);
-    const result = await db.collection('items').insertOne(req.body || {});
-    res.json({ insertedId: result.insertedId });
-  } catch (err) {
-    console.error('POST /items error:', err);
-    res.status(500).json({ error: 'Failed to insert item' });
-  }
-});
-
-// Replace simple listen with resilient startServer to handle EADDRINUSE
-const BASE_PORT = parseInt(process.env.PORT, 10) || 3000;
-const MAX_PORT_ATTEMPTS = parseInt(process.env.MAX_PORT_ATTEMPTS, 10) || 10; // try BASE_PORT .. BASE_PORT + N -1
-
-function startServer(port = BASE_PORT, attempt = 0) {
-  const server = app.listen(port, () => {
-    console.log(`Backend running: http://localhost:${port}`);
   });
+});
 
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE') {
-      console.warn(`Port ${port} in use.`);
-      if (attempt + 1 < MAX_PORT_ATTEMPTS) {
-        const nextPort = port + 1;
-        console.warn(`Trying port ${nextPort} (attempt ${attempt + 2}/${MAX_PORT_ATTEMPTS})...`);
-        setTimeout(() => startServer(nextPort, attempt + 1), 200);
-      } else {
-        console.error(`All ports ${BASE_PORT}..${BASE_PORT + MAX_PORT_ATTEMPTS - 1} are in use. Exiting.`);
-        process.exit(1);
-      }
-    } else {
-      console.error('Server error:', err);
-      process.exit(1);
-    }
+// --- 404 handler ---
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// --- error handler ---
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// --- start server ---
+async function startServer() {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
-// Replace previous auto-start logic with "start only when executed directly".
-// If this module is imported (e.g. by Vercel serverless), don't call app.listen().
-if (path.resolve(process.argv[1] || '') === __filename) {
-  (async () => {
-    if (MONGODB_URI) {
-      await connectMongo().catch(() => {});
-      // small grace period for async resolution
-      await new Promise(r => setTimeout(r, 100));
-    }
-    startServer();
-  })();
-} else {
-  // Imported as a module (serverless). Do not start a listener here.
-  console.log('Express app imported (no local server started).');
-}
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
 
-export default app;
