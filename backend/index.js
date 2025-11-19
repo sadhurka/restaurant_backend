@@ -483,6 +483,28 @@ if (fs.existsSync(faviconFile)) {
   app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 }
 
+// Add helper endpoint that shows how to form a protection-bypass URL for this deployment.
+// This does NOT bypass protection by itself — you must obtain a bypass token from Vercel
+// and paste it into the returned template.
+app.get('/auth/info', (req, res) => {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  const host = req.get('host') || 'https://restaurant-backend-938s-3g6zonnay-sads-projects-eadc351b.vercel.app/';
+  // the path you likely want to access (menu)
+  const targetPath = '/api/menu';
+  const template = `${proto}://${host}${targetPath}?x-vercel-set-bypass-cookie=true&x-vercel-protection-bypass=<REPLACE_WITH_BYPASS_TOKEN>`;
+  res.json({
+    ok: true,
+    message: 'If your deployment is protected by Vercel Authentication, obtain a bypass token (see Vercel docs) and open the generated URL below in your browser.',
+    template,
+    docs: 'https://vercel.com/docs/deployment-protection',
+    notes: [
+      'Obtain the bypass token via Vercel MCP or the Vercel dashboard (see docs).',
+      'Replace <REPLACE_WITH_BYPASS_TOKEN> in the template and open the URL in your browser.',
+      'This endpoint only returns the template; it does not bypass protection itself.'
+    ]
+  });
+});
+
 // --- 404 handler ---
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
