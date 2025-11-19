@@ -15,14 +15,36 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// --- Replace hardcoded CORS usage with env-driven config and apply before routes ---
-const CORS_ORIGIN = process.env.CORS_ORIGIN || ''; // empty means no origin restriction by default
-if (CORS_ORIGIN) {
-  app.use(cors({ origin: CORS_ORIGIN }));
+// --- Robust CORS setup (env-driven) ---
+// Set CORS_ORIGIN to a specific origin in production (e.g. https://your-frontend.example.com).
+/// If not set, default to '*' for permissive behavior (suitable for testing).
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const CORS_ALLOW_CREDENTIALS = (process.env.CORS_ALLOW_CREDENTIALS === 'true') || false;
+
+// Use the cors package configured from env (when origin is '*' cors package accepts true to reflect request origin)
+if (CORS_ORIGIN === '*') {
+  app.use(cors({ origin: true, credentials: CORS_ALLOW_CREDENTIALS }));
 } else {
-  // if CORS_ORIGIN not set, allow all origins (explicit) to maintain previous behavior
-  app.use(cors());
+  app.use(cors({ origin: CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
 }
+
+// Ensure OPTIONS preflight is handled for all routes
+app.options('*', cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN, credentials: CORS_ALLOW_CREDENTIALS }));
+
+// Also add an explicit header middleware to guarantee headers on every response
+app.use((req, res, next) => {
+  const originValue = CORS_ORIGIN === '*' ? '*' : CORS_ORIGIN;
+  res.setHeader('Access-Control-Allow-Origin', originValue);
+  if (CORS_ALLOW_CREDENTIALS) {
+    // When using credentials, the Access-Control-Allow-Origin must NOT be '*'
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  // For preflight short-circuit
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 const PORT = process.env.PORT || 3000;
 
