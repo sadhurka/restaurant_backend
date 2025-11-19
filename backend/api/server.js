@@ -15,6 +15,33 @@ function safeJson(res, status, obj) {
 }
 
 export default async function handler(req, res) {
+  // --- Add: support Vercel deployment-protection bypass flow ---
+  try {
+    const host = req.headers.host || 'localhost';
+    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    const url = new URL(req.url, `${proto}://${host}`);
+    const setBypass = url.searchParams.get('x-vercel-set-bypass-cookie');
+    const bypassToken = url.searchParams.get('x-vercel-protection-bypass');
+
+    if (setBypass === 'true' && bypassToken) {
+      const cookieVal = encodeURIComponent(bypassToken);
+      const secureFlag = proto === 'https' ? 'Secure;' : '';
+      // Set cookie name as Vercel expects and redirect to cleaned URL
+      const cookie = `x-vercel-protection-bypass=${cookieVal}; Path=/; Max-Age=3600; HttpOnly=false; ${secureFlag} SameSite=Lax`;
+      res.setHeader('Set-Cookie', cookie);
+      url.searchParams.delete('x-vercel-set-bypass-cookie');
+      url.searchParams.delete('x-vercel-protection-bypass');
+      const cleanPath = url.pathname + (url.search ? `?${url.searchParams.toString()}` : '');
+      res.statusCode = 302;
+      res.setHeader('Location', cleanPath);
+      res.end();
+      return;
+    }
+  } catch (e) {
+    // ignore parsing errors and continue to normal handling
+    console.warn('Bypass cookie handler error (continuing):', e && e.stack ? e.stack : e);
+  }
+
   // Early detect browser/html requests that hit Vercel Deployment Protection
   // and return a clear JSON instructing what to change (cannot bypass in code).
   const accept = req.headers['accept'] || '';
