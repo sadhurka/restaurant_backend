@@ -30,12 +30,8 @@ const PORT = process.env.PORT || 3000;
 const dataDir = path.join(__dirname, 'data');
 const fallbackMenuFile = path.join(dataDir, 'menu.json');
 
-if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const publicImagesDir = path.join(__dirname, 'public', 'images');
-const imagesDir = path.join(__dirname, 'images');
+// removed automatic directory creation to avoid adding files while running
+// (If you want a local fallback, create data/menu.json manually — the server will read it if present.)
 console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
 
 if (fs.existsSync(publicImagesDir)) {
