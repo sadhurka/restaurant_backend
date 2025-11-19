@@ -245,6 +245,26 @@ function loadFallbackMenu() {
 // root /health
 app.get('/', (_req, res) => res.json({ ok: true }));
 
+// --- added helper: scan all collections with counts for diagnostics ---
+async function scanCollections(db) {
+  try {
+    const list = await db.listCollections().toArray();
+    const out = [];
+    for (const c of list) {
+      try {
+        const cnt = await db.collection(c.name).countDocuments();
+        out.push({ name: c.name, count: cnt });
+      } catch {
+        out.push({ name: c.name, count: null });
+      }
+    }
+    return out;
+  } catch (e) {
+    return [{ error: 'Failed to list collections', detail: String(e && e.message || e) }];
+  }
+}
+// --- end added helper ---
+
 // /menu endpoint: prefer MongoDB, then fallback file, otherwise error
 app.get('/menu', async (req, res) => {
   try {
@@ -297,13 +317,15 @@ app.get('/menu', async (req, res) => {
           // --- changed: normalize docs to flat items and format them ---
           const items = normalizeMenuDocs(data);
           if (!items.length) {
+            const db = mongoClient.db(MONGODB_DB || undefined);
+            const colStats = await scanCollections(db);
             return res.status(404).json({
-              error: 'No menu items found in MongoDB. Documents exist but did not match expected item shapes.',
-              collection: resolvedCollectionName,
-              hint: 'Ensure your documents are either item documents or contain arrays: items/data/menu/categories[].items.'
+              error: 'No menu items found in MongoDB',
+              collectionTried: resolvedCollectionName,
+              collections: colStats,
+              hint: 'Verify documents have item fields or arrays: items/data/menu/categories[].items'
             });
           }
-
           const formatted = items.map(item => ({
             ...item,
             price: toNumber(item.price),
@@ -318,8 +340,15 @@ app.get('/menu', async (req, res) => {
                 : (imageBaseEnv ? `${imageBaseEnv}/${item.image}` : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`))
             ) : null
           }));
-          // --- end changed ---
-
+          if (process.env.FORCE_VERBOSE === 'true') {
+            return res.json({
+              ok: true,
+              count: formatted.length,
+              collection: resolvedCollectionName,
+              db: MONGODB_DB,
+              items: formatted
+            });
+          }
           return res.json(formatted);
         } else {
           console.error('Mongo configured but no menu documents found. Check /debug/mongo for collection names and configuration.');
@@ -392,13 +421,15 @@ app.get('/api/menu', async (req, res) => {
               // --- changed: normalize docs first, then format
               const items = normalizeMenuDocs(data);
               if (!items.length) {
+                const db = mongoClient.db(MONGODB_DB || undefined);
+                const colStats = await scanCollections(db);
                 return res.status(404).json({
-                  error: 'No menu items found in MongoDB. Documents exist but did not match expected item shapes.',
-                  collection: resolvedCollectionName,
-                  hint: 'Ensure your documents are either item documents or contain arrays: items/data/menu/categories[].items.'
+                  error: 'No menu items found in MongoDB',
+                  collectionTried: resolvedCollectionName,
+                  collections: colStats,
+                  hint: 'Verify documents have item fields or arrays: items/data/menu/categories[].items'
                 });
               }
-
               const allItemsFormatted = items.map(item => ({
                 ...item,
                 price: toNumber(item.price),
@@ -413,8 +444,15 @@ app.get('/api/menu', async (req, res) => {
                     : (imageBaseEnv ? `${imageBaseEnv}/${item.image}` : (backendUrl ? `${backendUrl}/images/${item.image}` : `/images/${item.image}`))
                 ) : null
               }));
-              // --- end changed
-
+              if (process.env.FORCE_VERBOSE === 'true') {
+                return res.json({
+                  ok: true,
+                  count: allItemsFormatted.length,
+                  collection: resolvedCollectionName,
+                  db: MONGODB_DB,
+                  items: allItemsFormatted
+                });
+              }
               return res.json(allItemsFormatted);
             } else {
               console.error('Mongo configured but no menu documents found. Check /debug/mongo for collection names and configuration.');
@@ -520,16 +558,23 @@ app.get('/debug/connect', async (_req, res) => {
 // --- debug /mongo endpoint: show last MongoDB error and collection info ---
 app.get('/debug/mongo', async (_req, res) => {
   try {
-    let info = { lastError: null, collections: [] };
-    if (mongoClient && resolvedCollectionName) {
-      info = {
-        lastError: lastMongoError,
-        collections: (await mongoClient.db(MONGODB_DB || undefined).listCollections().toArray()).map(c => c.name)
-      };
-    } else {
-      info.lastError = lastMongoError;
+    const dbOk = !!mongoClient;
+    let colStats = [];
+    if (dbOk) {
+      try {
+        colStats = await scanCollections(mongoClient.db(MONGODB_DB || undefined));
+      } catch (e) {
+        colStats = [{ error: 'scan failed', detail: String(e && e.message || e) }];
+      }
     }
-    res.json({ ok: true, info });
+    return res.json({
+      ok: true,
+      connected: dbOk,
+      db: MONGODB_DB,
+      resolvedCollection: resolvedCollectionName || null,
+      lastMongoError,
+      collections: colStats
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }
