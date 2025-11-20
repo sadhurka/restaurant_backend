@@ -85,14 +85,17 @@ export default async function handler(req, res) {
       const client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
+
+      // Convert id to ObjectId if possible, otherwise use as string
       let filter;
       let objectId = null;
       try {
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
-        filter = { id };
+        filter = { id: typeof id === 'string' ? id : String(id) };
       }
+
       // Only update allowed fields
       const allowed = {};
       ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
@@ -105,10 +108,16 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'No updatable fields in payload.' }));
         return;
       }
+
+      // Ensure price is a number if present
+      if (allowed.price !== undefined) allowed.price = Number(allowed.price);
+
       // Use updateOne with filter and $set
       const result = await collection.updateOne(filter, { $set: allowed });
+
       // Debug: log what was attempted
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
+
       if (result.matchedCount === 0) {
         await client.close();
         res.statusCode = 404;
@@ -121,7 +130,7 @@ export default async function handler(req, res) {
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
       } else {
-        updated = await collection.findOne({ id });
+        updated = await collection.findOne({ id: typeof id === 'string' ? id : String(id) });
       }
       await client.close();
       res.statusCode = 200;
