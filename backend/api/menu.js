@@ -72,6 +72,8 @@ export default async function handler(req, res) {
   if (req.method === 'PUT') {
     try {
       const payload = await getParsedBody(req);
+      console.log('PUT /api/menu payload:', payload); // <-- DEBUG LOG
+
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -122,6 +124,9 @@ export default async function handler(req, res) {
       allowed.desc = descValue;
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
       if ('_id' in allowed) delete allowed._id;
+
+      console.log('PUT /api/menu update filter:', filter); // <-- DEBUG LOG
+      console.log('PUT /api/menu update $set:', allowed);  // <-- DEBUG LOG
 
       const result = await collection.updateOne(filter, { $set: allowed });
 
