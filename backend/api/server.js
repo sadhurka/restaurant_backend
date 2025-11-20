@@ -16,6 +16,9 @@ function safeJson(res, status, obj) {
   }
 }
 
+// This file is only for Vercel deployment routing. All CRUD logic is in index.js.
+// Do not add business logic here. Use index.js for menu add/delete/update.
+
 export default async function handler(req, res) {
   // --- Add: Log incoming Authorization header for 401 debugging ---
   const authHeader = req.headers.authorization || null;
