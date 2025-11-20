@@ -140,10 +140,11 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "PUT") {
-    // Accept id from either query, body.id, or body._id
-    const id = req.query.id || req.body.id || req.body._id;
+    // Accept id from either URL (req.query.id), body.id, or body._id
+    let id = req.query.id;
+    if (!id && req.body) id = req.body._id || req.body.id;
     const payload = req.body;
-    if (!id || !payload) {
+    if (!id || !payload || typeof payload !== 'object') {
       await client.close();
       return res.status(400).json({ error: "Missing id or payload" });
     }
@@ -155,11 +156,15 @@ export default async function handler(req, res) {
     } else {
       filter = { id };
     }
-    // Only update allowed fields (title, price, image, category, badge, tags, description, desc)
+    // Only update allowed fields
     const allowed = {};
     ['title', 'price', 'image', 'category', 'badge', 'tags', 'description', 'desc'].forEach(k => {
       if (payload[k] !== undefined) allowed[k] = payload[k];
     });
+    if (Object.keys(allowed).length === 0) {
+      await client.close();
+      return res.status(400).json({ error: "No updatable fields in payload" });
+    }
     const result = await collection.updateOne(
       filter,
       { $set: allowed }
