@@ -134,28 +134,29 @@ export default async function handler(req, res) {
         return;
       }
 
-      if (result.modifiedCount === 0) {
-        await client.close();
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ ok: true, message: 'No changes detected.' }));
-        return;
-      }
-
+      // Always return the updated document from the database, or fallback to a confirmation object
       let updated = null;
-      if (objectId) {
+      if (result.modifiedCount > 0 && objectId) {
         updated = await collection.findOne({ _id: objectId });
-      } else {
+      } else if (result.modifiedCount > 0 && id) {
         updated = await collection.findOne({ id: String(id) });
       }
+
       await client.close();
+
+      if (!updated) {
+        // Fallback: Return a simple success confirmation object
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ ok: true, message: 'Update successful but document fetch failed.', _id: objectId || id }));
+        return;
+      }
 
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(updated));
       return;
     } catch (err) {
-      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
