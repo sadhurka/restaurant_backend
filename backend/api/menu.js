@@ -102,15 +102,6 @@ export default async function handler(req, res) {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
 
-      // Always update, do not skip unchanged fields
-      if (Object.keys(allowed).length === 0) {
-        await client.close();
-        res.statusCode = 400;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'No updatable fields in payload.' }));
-        return;
-      }
-
       // Ensure price is a number if present
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
 
@@ -120,14 +111,7 @@ export default async function handler(req, res) {
       // Debug: log what was attempted
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
-      if (result.matchedCount === 0) {
-        await client.close();
-        res.statusCode = 404;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'Menu item not found.' }));
-        return;
-      }
-      // Find by _id if possible, fallback to id
+      // If nothing was modified, still return the found document (do not treat as error)
       let updated;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
@@ -135,6 +119,14 @@ export default async function handler(req, res) {
         updated = await collection.findOne({ id: typeof id === 'string' ? id : String(id) });
       }
       await client.close();
+
+      if (!updated) {
+        res.statusCode = 404;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'Menu item not found.' }));
+        return;
+      }
+
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(updated));
