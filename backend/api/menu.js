@@ -81,6 +81,7 @@ export default async function handler(req, res) {
       }
       if (!id && payload) id = payload._id || payload.id;
       if (!id) {
+        console.log('PUT /api/menu: No id found in query or payload');
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing id for update' }));
@@ -100,13 +101,18 @@ export default async function handler(req, res) {
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
-      let filter;
+      // Try both _id and id for filter
+      let filter = {};
       let objectId = null;
       try {
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
         filter = { id: String(id) };
+      }
+      // If both _id and id exist, try both (for robustness)
+      if (payload._id && payload.id && payload._id !== payload.id) {
+        filter = { $or: [{ _id: new ObjectId(payload._id) }, { id: String(payload.id) }] };
       }
 
       // Always set both description and desc fields, even if only one is present
@@ -134,13 +140,15 @@ export default async function handler(req, res) {
         await client.close();
         res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'Menu item not found.' }));
+        res.end(JSON.stringify({ error: 'Menu item not found.', filter, payload }));
         return;
       }
 
       let updated = null;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
+      } else if (payload.id) {
+        updated = await collection.findOne({ id: String(payload.id) });
       } else {
         updated = await collection.findOne({ id: String(id) });
       }
