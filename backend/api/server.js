@@ -176,20 +176,22 @@ export default async function handler(req, res) {
     if (ObjectId.isValid(id)) {
       filter = { _id: new ObjectId(id) };
     } else {
-      filter = { id };
+      filter = { _id: id };
     }
+    // Always update updatedAt for cache busting
+    payload.updatedAt = new Date().toISOString();
+
     const result = await collection.updateOne(
       filter,
       { $set: payload }
     );
-    // Return the updated document if update was successful
     if (result.matchedCount === 0) {
       await client.close();
       return res.status(404).json({ error: "Menu item not found" });
     }
     const updated = await collection.findOne(filter);
     await client.close();
-    return res.status(200).json(updated);
+    return res.status(200).json({ ok: true, updated });
   }
 
   await client.close();
