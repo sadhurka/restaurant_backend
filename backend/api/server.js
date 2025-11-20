@@ -181,7 +181,105 @@ export default async function handler(req, res) {
     }
     return safeJson(res, 200, { ok: true });
   }
+// server.js - ADD THIS BLOCK after the DELETE handler
 
+  // --- ADD: Handle PUT (update food) ---
+  if (req.method === "PUT") {
+    let client;
+    try {
+      const payload = req.body; // Use req.body directly
+
+      let id = req.query.id;
+      if (!id && req.url) {
+        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+        if (match) id = match[1];
+      }
+      if (!id && payload) id = payload._id || payload.id;
+      if (!id) {
+        return safeJson(res, 400, { error: 'Missing id for update' });
+      }
+      if (!payload || Object.keys(payload).length === 0) {
+        return safeJson(res, 400, { error: 'Missing payload.' });
+      }
+
+      client = await MongoClient.connect(process.env.MONGODB_URI);
+      const db = client.db(process.env.MONGODB_DB);
+      const collection = db.collection(process.env.MONGODB_COLLECTION);
+
+      let filter;
+      let objectId = null;
+      try {
+        // Attempt to match by MongoDB's unique _id (ObjectId)
+        objectId = new ObjectId(id);
+        filter = { _id: objectId };
+      } catch {
+        // Fallback to a custom string 'id' field
+        filter = { id: String(id) };
+      }
+
+      // --- Payload Construction ---
+      const allowed = {};
+      const fields = ['category', 'title', 'price', 'image', 'description', 'desc'];
+      fields.forEach(k => {
+        if (payload[k] !== undefined) allowed[k] = payload[k];
+      });
+      
+      const descValue = payload.description ?? payload.desc ?? '';
+      allowed.description = descValue;
+      allowed.desc = descValue;
+
+      // Ensure price is a valid number
+      if (allowed.price !== undefined) {
+          const priceValue = Number(allowed.price);
+          if (!isNaN(priceValue) && priceValue >= 0) {
+              allowed.price = priceValue;
+          } else {
+              delete allowed.price; // Remove invalid price to prevent update failure
+          }
+      }
+      
+      if ('_id' in allowed) delete allowed._id; 
+      // --- End Payload Construction ---
+
+      if (Object.keys(allowed).length === 0) {
+        return safeJson(res, 400, { error: 'No valid fields provided for update.' });
+      }
+      
+      const result = await collection.updateOne(filter, { $set: allowed });
+
+      console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
+
+      if (result.matchedCount === 0) {
+        return safeJson(res, 404, { error: 'Menu item not found.' });
+      }
+
+      // If item was found but no modifications were made, send a specific error (409)
+      if (result.modifiedCount === 0) {
+          return safeJson(res, 409, { 
+              error: 'Update failed: Item found but NO fields were modified (data was identical).', 
+              details: allowed 
+          });
+      }
+
+      // Success response: modifiedCount > 0
+      return safeJson(res, 200, { 
+          ok: true, 
+          message: 'Item updated successfully.',
+          id: objectId ? String(objectId) : id
+      });
+      
+    } catch (err) {
+      console.error('PUT /api/menu/:id error:', err);
+      return safeJson(res, 500, { error: 'Failed to update menu item.', reason: err.message || String(err) });
+    } finally {
+      // Ensure connection is always closed
+      if (client) {
+        await client.close();
+      }
+    }
+  }
+
+  // Delegate to Express app with defensive error handling (REMAINS THE SAME)
   // Delegate to Express app with defensive error handling
   try {
     const result = app(req, res);

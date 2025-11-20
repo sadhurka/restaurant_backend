@@ -69,8 +69,6 @@ export default async function handler(req, res) {
     }
   }
 
-// menu.js - FINAL REVISED PUT HANDLER
-
   if (req.method === 'PUT') {
     let client;
     try {
@@ -103,54 +101,74 @@ export default async function handler(req, res) {
       let filter;
       let objectId = null;
       try {
-        // 1. Attempt to match by MongoDB's unique _id (ObjectId)
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
-        // 2. Fallback to a custom string 'id' field
         filter = { id: String(id) };
       }
 
+      // --- Payload Construction ---
       const allowed = {};
-      ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
+      const fields = ['category', 'title', 'price', 'image', 'description', 'desc'];
+      fields.forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
+      
       const descValue = payload.description ?? payload.desc ?? '';
       allowed.description = descValue;
       allowed.desc = descValue;
-      if (allowed.price !== undefined) allowed.price = Number(allowed.price);
-      if ('_id' in allowed) delete allowed._id; 
 
+      // Ensure price is a valid number, otherwise delete it from the update payload
+      if (allowed.price !== undefined) {
+          const priceValue = Number(allowed.price);
+          if (!isNaN(priceValue) && priceValue >= 0) {
+              allowed.price = priceValue;
+          } else {
+              delete allowed.price;
+          }
+      }
+      
+      if ('_id' in allowed) delete allowed._id; 
+      // --- End Payload Construction ---
+
+      if (Object.keys(allowed).length === 0) {
+        res.statusCode = 400;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'No valid fields provided for update.' }));
+        return;
+      }
+      
       const result = await collection.updateOne(filter, { $set: allowed });
 
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
       if (result.matchedCount === 0) {
-        // Item not found
         res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
-
-      // We rely solely on the success of updateOne. We do NOT attempt findOne().
-      res.statusCode = 200;
-      res.setHeader('content-type', 'application/json');
       
-      const responseData = { 
-          ok: true, 
-          modified: result.modifiedCount,
-          id: objectId ? String(objectId) : id
-      };
-      
+      // 🛑 CRITICAL DEBUG STEP: Force an error if the item exists but wasn't modified.
       if (result.modifiedCount === 0) {
-          // Send a warning/info but keep 200 OK so frontend reloads anyway
-          responseData.message = 'Item found, but no changes were applied (data was identical or filter was wrong).';
-      } else {
-          responseData.message = 'Item updated successfully.';
+          res.statusCode = 409; // Conflict (or 400 Bad Request)
+          res.setHeader('content-type', 'application/json');
+          // This message will appear on the frontend and in your logs
+          res.end(JSON.stringify({ 
+              error: 'Update failed: Item found but NO fields were modified. This might mean the data is identical or a field type is blocking the update.', 
+              details: allowed
+          }));
+          return;
       }
 
-      res.end(JSON.stringify(responseData));
+      // Success response: modifiedCount > 0
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ 
+          ok: true, 
+          message: 'Item updated successfully.',
+          id: objectId ? String(objectId) : id
+      }));
       return;
       
     } catch (err) {
@@ -160,7 +178,6 @@ export default async function handler(req, res) {
       res.end(JSON.stringify({ error: 'Failed to update menu item.', reason: err.message || String(err) }));
       return;
     } finally {
-      // Ensure connection is always closed
       if (client) {
         await client.close();
       }
