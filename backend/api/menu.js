@@ -100,13 +100,14 @@ export default async function handler(req, res) {
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
-      // Try both _id (ObjectId) and id (string) for filter
-      let filter = {};
+      // Always use _id for update if possible
+      let filter;
       let objectId = null;
       try {
         objectId = new ObjectId(id);
-        filter = { $or: [{ _id: objectId }, { id: String(id) }] };
+        filter = { _id: objectId };
       } catch {
+        // fallback to string id
         filter = { id: String(id) };
       }
 
@@ -116,8 +117,10 @@ export default async function handler(req, res) {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
 
-      // Ensure price is a number if present
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
+
+      // --- CRITICAL: Remove _id from allowed fields if present ---
+      if ('_id' in allowed) delete allowed._id;
 
       // Use updateOne with filter and $set
       const result = await collection.updateOne(filter, { $set: allowed });
@@ -125,7 +128,6 @@ export default async function handler(req, res) {
       // Debug: log what was attempted
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
-      // If nothing was matched, return 404
       if (result.matchedCount === 0) {
         await client.close();
         res.statusCode = 404;
@@ -134,13 +136,9 @@ export default async function handler(req, res) {
         return;
       }
 
-      // Always return the updated document (even if modifiedCount is 0)
       let updated = null;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
-        if (!updated) {
-          updated = await collection.findOne({ id: String(id) });
-        }
       } else {
         updated = await collection.findOne({ id: String(id) });
       }
@@ -155,6 +153,55 @@ export default async function handler(req, res) {
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
+      return;
+    }
+  }
+
+  // Handle DELETE /api/menu/:id for deleting food
+  if (req.method === 'DELETE') {
+    try {
+      let id = req.query.id;
+      if (!id && req.url) {
+        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+        if (match) id = match[1];
+      }
+      const payload = await getParsedBody(req);
+      if (!id && payload) id = payload._id || payload.id;
+      if (!id) {
+        res.statusCode = 400;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'Missing id for deletion' }));
+        return;
+      }
+      if (process.env.MONGODB_URI) {
+        await connectMongo();
+      }
+      const { MongoClient, ObjectId } = await import('mongodb');
+      const client = await MongoClient.connect(process.env.MONGODB_URI);
+      const db = client.db(process.env.MONGODB_DB);
+      const collection = db.collection(process.env.MONGODB_COLLECTION);
+      let filter;
+      try {
+        filter = { _id: new ObjectId(id) };
+      } catch {
+        filter = { id: String(id) };
+      }
+      const result = await collection.deleteOne(filter);
+      await client.close();
+      if (result.deletedCount === 0) {
+        res.statusCode = 404;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'Menu item not found.' }));
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    } catch (err) {
+      res.statusCode = 500;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: 'Failed to delete menu item.' }));
       return;
     }
   }
