@@ -31,7 +31,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Handle POST /api/menu directly for add food
+  // --- Only handle POST/PUT/DELETE here, let GET fall through to Express ---
   if (req.method === 'POST') {
     try {
       if (process.env.MONGODB_URI) {
@@ -69,11 +69,9 @@ export default async function handler(req, res) {
     }
   }
 
-  // Handle PUT /api/menu/:id for updating food
   if (req.method === 'PUT') {
     try {
       const payload = await getParsedBody(req);
-      // Extract id from URL: /api/menu/:id
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -107,7 +105,6 @@ export default async function handler(req, res) {
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
-        // fallback to string id
         filter = { id: String(id) };
       }
 
@@ -118,14 +115,10 @@ export default async function handler(req, res) {
       });
 
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
-
-      // --- CRITICAL: Remove _id from allowed fields if present ---
       if ('_id' in allowed) delete allowed._id;
 
-      // Use updateOne with filter and $set
       const result = await collection.updateOne(filter, { $set: allowed });
 
-      // Debug: log what was attempted
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
       if (result.matchedCount === 0) {
@@ -157,7 +150,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // Handle DELETE /api/menu/:id for deleting food
   if (req.method === 'DELETE') {
     try {
       let id = req.query.id;
@@ -206,26 +198,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // ...existing code...
-  try {
-    if (process.env.MONGODB_URI) {
-      await connectMongo().catch((err) => {
-        const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
-        res.statusCode = 502;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({
-          error: 'Failed to connect to MongoDB from serverless function',
-          reason: err && (err.message || String(err)),
-          lastMongoError: last || null
-        }));
-      });
-      if (res.writableEnded) return;
-    }
-    // Delegate to Express app (route /api/menu is defined there)
-    return app(req, res);
-  } catch (err) {
-    res.statusCode = 500;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ error: 'Internal Server Error', reason: err && (err.message || String(err)) }));
-  }
+  // --- For GET and all other methods, delegate to Express app ---
+  return app(req, res);
 }
