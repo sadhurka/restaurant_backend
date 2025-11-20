@@ -86,12 +86,12 @@ export default async function handler(req, res) {
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
-      // Convert id to ObjectId if possible, otherwise use as string
-      let filter;
+      // Try both _id (ObjectId) and id (string) for filter
+      let filter = {};
       let objectId = null;
       try {
         objectId = new ObjectId(id);
-        filter = { _id: objectId };
+        filter = { $or: [{ _id: objectId }, { id: String(id) }] };
       } catch {
         filter = { id: String(id) };
       }
@@ -121,9 +121,12 @@ export default async function handler(req, res) {
       }
 
       // Always return the updated document (even if modifiedCount is 0)
-      let updated;
+      let updated = null;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
+        if (!updated) {
+          updated = await collection.findOne({ id: String(id) });
+        }
       } else {
         updated = await collection.findOne({ id: String(id) });
       }
