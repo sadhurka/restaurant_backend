@@ -86,8 +86,10 @@ export default async function handler(req, res) {
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
       let filter;
+      let objectId = null;
       try {
-        filter = { _id: new ObjectId(id) };
+        objectId = new ObjectId(id);
+        filter = { _id: objectId };
       } catch {
         filter = { id };
       }
@@ -105,6 +107,8 @@ export default async function handler(req, res) {
       }
       // Use updateOne with filter and $set
       const result = await collection.updateOne(filter, { $set: allowed });
+      // Debug: log what was attempted
+      console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
       if (result.matchedCount === 0) {
         await client.close();
         res.statusCode = 404;
@@ -114,9 +118,9 @@ export default async function handler(req, res) {
       }
       // Find by _id if possible, fallback to id
       let updated;
-      try {
-        updated = await collection.findOne({ _id: new ObjectId(id) });
-      } catch {
+      if (objectId) {
+        updated = await collection.findOne({ _id: objectId });
+      } else {
         updated = await collection.findOne({ id });
       }
       await client.close();
@@ -125,6 +129,7 @@ export default async function handler(req, res) {
       res.end(JSON.stringify(updated));
       return;
     } catch (err) {
+      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
