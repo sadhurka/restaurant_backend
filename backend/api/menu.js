@@ -54,13 +54,18 @@ export default async function handler(req, res) {
   // Handle PUT /api/menu/:id for updating food
   if (req.method === 'PUT') {
     try {
+      // Parse body if needed (Vercel may not parse JSON automatically)
+      let payload = req.body;
+      if (typeof payload === 'string') {
+        try { payload = JSON.parse(payload); } catch {}
+      }
       // Extract id from URL: /api/menu/:id
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
         if (match) id = match[1];
       }
-      if (!id && req.body) id = req.body._id || req.body.id;
+      if (!id && payload) id = payload._id || payload.id;
       if (!id) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
@@ -70,7 +75,6 @@ export default async function handler(req, res) {
       if (process.env.MONGODB_URI) {
         await connectMongo();
       }
-      const payload = req.body;
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
@@ -99,6 +103,7 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'No updatable fields in payload.' }));
         return;
       }
+      // Use updateOne with filter and $set
       const result = await collection.updateOne(filter, { $set: allowed });
       if (result.matchedCount === 0) {
         await client.close();
@@ -107,7 +112,13 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
-      const updated = await collection.findOne(filter);
+      // Find by _id if possible, fallback to id
+      let updated;
+      try {
+        updated = await collection.findOne({ _id: new ObjectId(id) });
+      } catch {
+        updated = await collection.findOne({ id });
+      }
       await client.close();
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
