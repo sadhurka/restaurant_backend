@@ -108,11 +108,15 @@ export default async function handler(req, res) {
         filter = { id: String(id) };
       }
 
-      // Only update allowed fields
+      // Only update allowed fields, always set both description and desc
       const allowed = {};
-      ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
+      ['category', 'title', 'price', 'image'].forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
+      // Always set both description and desc fields
+      const descValue = payload.description ?? payload.desc ?? '';
+      allowed.description = descValue;
+      allowed.desc = descValue;
 
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
       if ('_id' in allowed) delete allowed._id;
