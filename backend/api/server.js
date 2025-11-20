@@ -153,4 +153,45 @@ export default async function handler(req, res) {
       });
     }
   }
+
+  const client = await MongoClient.connect(process.env.MONGODB_URI);
+  const db = client.db(process.env.MONGODB_DB);
+  const collection = db.collection(process.env.MONGODB_COLLECTION);
+
+  if (req.method === "GET") {
+    const items = await collection.find({}).toArray();
+    await client.close();
+    return res.status(200).json(items);
+  }
+
+  if (req.method === "PUT") {
+    // Accept id from either query or body, and ensure ObjectId conversion
+    const id = req.query.id || req.body.id || req.body._id;
+    const payload = req.body;
+    if (!id || !payload) {
+      await client.close();
+      return res.status(400).json({ error: "Missing id or payload" });
+    }
+    let filter;
+    if (ObjectId.isValid(id)) {
+      filter = { _id: new ObjectId(id) };
+    } else {
+      filter = { id };
+    }
+    const result = await collection.updateOne(
+      filter,
+      { $set: payload }
+    );
+    // Return the updated document if update was successful
+    if (result.matchedCount === 0) {
+      await client.close();
+      return res.status(404).json({ error: "Menu item not found" });
+    }
+    const updated = await collection.findOne(filter);
+    await client.close();
+    return res.status(200).json(updated);
+  }
+
+  await client.close();
+  res.status(404).json({ error: "Not found" });
 }
