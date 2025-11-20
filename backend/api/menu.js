@@ -69,7 +69,10 @@ export default async function handler(req, res) {
     }
   }
 
+ // menu.js - Replace the ENTIRE 'if (req.method === "PUT")' block with this:
+
   if (req.method === 'PUT') {
+    let client; // Declare client outside try block for access in finally
     try {
       const payload = await getParsedBody(req);
       console.log('PUT /api/menu payload:', payload); // DEBUG
@@ -86,26 +89,26 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Missing id for update' }));
         return;
       }
-      if (process.env.MONGODB_URI) {
-        await connectMongo();
-      }
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing payload.' }));
         return;
       }
+
       const { MongoClient, ObjectId } = await import('mongodb');
-      const client = await MongoClient.connect(process.env.MONGODB_URI);
+      client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
       let filter;
       let objectId = null;
       try {
+        // Attempt to treat the ID as a MongoDB ObjectId
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
+        // Fallback to treating it as a standard ID field
         filter = { id: String(id) };
       }
 
@@ -127,40 +130,36 @@ export default async function handler(req, res) {
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
       if (result.matchedCount === 0) {
-        await client.close();
         res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
 
-      // Always return the updated document from the database, or fallback to a confirmation object
-      let updated = null;
-      if (result.modifiedCount > 0 && objectId) {
-        updated = await collection.findOne({ _id: objectId });
-      } else if (result.modifiedCount > 0 && id) {
-        updated = await collection.findOne({ id: String(id) });
-      }
-
-      await client.close();
-
-      if (!updated) {
-        // Fallback: Return a simple success confirmation object
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ ok: true, message: 'Update successful but document fetch failed.', _id: objectId || id }));
-        return;
-      }
-
+      // --- SIMPLIFIED SUCCESS RESPONSE ---
+      // If matched, return a fixed success object. This eliminates the unreliable findOne() call.
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify(updated));
+      res.end(JSON.stringify({ 
+          ok: true, 
+          message: result.modifiedCount > 0 ? 'Item updated.' : 'No changes detected (data was identical).', 
+          id: id,
+          _id: objectId ? String(objectId) : undefined // Send back the ID
+      }));
       return;
+      
     } catch (err) {
+      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
+      res.end(JSON.stringify({ error: 'Failed to update menu item.', reason: err.message }));
       return;
+    } finally {
+      // Ensure the client is closed regardless of success or failure
+      if (client) {
+        // The connectMongo() might be used outside this, but the client we created here should be closed.
+        await client.close().catch(e => console.error("Error closing MongoDB client:", e)); 
+      }
     }
   }
 
