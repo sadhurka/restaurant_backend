@@ -72,7 +72,8 @@ export default async function handler(req, res) {
   if (req.method === 'PUT') {
     try {
       const payload = await getParsedBody(req);
-      // --- robust id extraction ---
+      console.log('PUT /api/menu payload:', payload); // DEBUG
+
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -108,41 +109,35 @@ export default async function handler(req, res) {
         filter = { id: String(id) };
       }
 
-      // Always set both description and desc fields, even if only one is present
-      let descValue = '';
-      if ('description' in payload) descValue = payload.description;
-      else if ('desc' in payload) descValue = payload.desc;
-
+      // Only allow updatable fields and always set both description and desc
       const allowed = {};
-      ['category', 'title', 'price', 'image'].forEach(k => {
+      ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
-      allowed.description = descValue;
-      allowed.desc = descValue;
+      // Always sync description and desc
+      if ('description' in allowed || 'desc' in allowed) {
+        const descValue = payload.description ?? payload.desc ?? '';
+        allowed.description = descValue;
+        allowed.desc = descValue;
+      }
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
       if ('_id' in allowed) delete allowed._id;
 
-      // --- always update updatedAt for cache busting ---
-      allowed.updatedAt = new Date().toISOString();
-
+      // --- Fix: Use updateOne with $set and check result.modifiedCount ---
       const result = await collection.updateOne(filter, { $set: allowed });
 
+      // Log for debugging
+      console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
+
       if (result.matchedCount === 0) {
-        // --- If not found, create new document with given id (upsert) ---
-        const docToInsert = { ...allowed };
-        if (objectId) docToInsert._id = objectId;
-        else docToInsert.id = id;
-        await collection.insertOne(docToInsert);
-        const created = objectId
-          ? await collection.findOne({ _id: objectId })
-          : await collection.findOne({ id: id });
         await client.close();
-        res.statusCode = 201;
+        res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(created));
+        res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
 
+      // Always return the updated document from the database
       let updated = null;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
@@ -156,6 +151,7 @@ export default async function handler(req, res) {
       res.end(JSON.stringify(updated));
       return;
     } catch (err) {
+      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
@@ -165,16 +161,13 @@ export default async function handler(req, res) {
 
   if (req.method === 'DELETE') {
     try {
-      // --- Extract id from /api/menu/:id or ?id=... for DELETE ---
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
         if (match) id = match[1];
       }
-      if (!id) {
-        const payload = await getParsedBody(req);
-        if (payload) id = payload._id || payload.id;
-      }
+      const payload = await getParsedBody(req);
+      if (!id && payload) id = payload._id || payload.id;
       if (!id) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
