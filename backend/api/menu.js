@@ -132,7 +132,7 @@ export default async function handler(req, res) {
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
       } else {
-        updated = await collection.findOne({ id: String(id) }); // <-- FIXED typo here
+        Aupdated = await collection.findOne({ id: String(id) });
       }
       await client.close();
 

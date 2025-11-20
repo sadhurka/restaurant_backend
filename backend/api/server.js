@@ -131,6 +131,57 @@ export default async function handler(req, res) {
     return;
   }
 
+  // --- ADD: Handle POST (add food) ---
+  if (req.method === "POST") {
+    const payload = req.body;
+    if (!payload || !payload.title || !payload.category || !payload.price) {
+      return safeJson(res, 400, { error: "Missing required fields." });
+    }
+    const client = await MongoClient.connect(process.env.MONGODB_URI);
+    const db = client.db(process.env.MONGODB_DB);
+    const collection = db.collection(process.env.MONGODB_COLLECTION);
+    const doc = {
+      ...payload,
+      price: Number(payload.price),
+      description: payload.description ?? payload.desc ?? '',
+      desc: payload.description ?? payload.desc ?? ''
+    };
+    const result = await collection.insertOne(doc);
+    const created = await collection.findOne({ _id: result.insertedId });
+    await client.close();
+    return safeJson(res, 200, created);
+  }
+
+  // --- ADD: Handle DELETE (delete food) ---
+  if (req.method === "DELETE") {
+    // Support both /api/menu/:id and /api/menu?id=...
+    let id = req.query.id;
+    if (!id && req.url) {
+      // Try to extract id from /api/menu/:id
+      const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+      if (match) id = match[1];
+    }
+    if (!id && req.body) id = req.body._id || req.body.id;
+    if (!id) {
+      return safeJson(res, 400, { error: "Missing id for deletion" });
+    }
+    const client = await MongoClient.connect(process.env.MONGODB_URI);
+    const db = client.db(process.env.MONGODB_DB);
+    const collection = db.collection(process.env.MONGODB_COLLECTION);
+    let filter;
+    try {
+      filter = { _id: new ObjectId(id) };
+    } catch {
+      filter = { id };
+    }
+    const result = await collection.deleteOne(filter);
+    await client.close();
+    if (result.deletedCount === 0) {
+      return safeJson(res, 404, { error: "Menu item not found." });
+    }
+    return safeJson(res, 200, { ok: true });
+  }
+
   // Delegate to Express app with defensive error handling
   try {
     const result = app(req, res);
