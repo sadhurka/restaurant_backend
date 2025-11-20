@@ -89,26 +89,26 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Missing id for update' }));
         return;
       }
+      if (process.env.MONGODB_URI) {
+        await connectMongo();
+      }
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing payload.' }));
         return;
       }
-
       const { MongoClient, ObjectId } = await import('mongodb');
-      client = await MongoClient.connect(process.env.MONGODB_URI);
+      client = await MongoClient.connect(process.env.MONGODB_URI); // Assign client here
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
       let filter;
       let objectId = null;
       try {
-        // Attempt to treat the ID as a MongoDB ObjectId
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
-        // Fallback to treating it as a standard ID field
         filter = { id: String(id) };
       }
 
@@ -136,18 +136,31 @@ export default async function handler(req, res) {
         return;
       }
 
-      // --- SIMPLIFIED SUCCESS RESPONSE ---
-      // If matched, return a fixed success object. This eliminates the unreliable findOne() call.
+      // Always return the updated document from the database, or fallback to allowed + id
+      let updated = null;
+      if (objectId) {
+        // Only attempt findOne if objectId was successfully parsed
+        updated = await collection.findOne({ _id: objectId });
+      } else {
+        updated = await collection.findOne({ id: String(id) });
+      }
+
+      if (!updated) {
+        // Fallback: return the allowed fields and id so frontend treats as success
+        const fallback = { ...allowed };
+        if (objectId) fallback._id = String(objectId); // <--- CRITICAL FIX: Convert ObjectId to string
+        else fallback.id = id;
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(fallback));
+        return;
+      }
+
+      // If updated document was found
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ 
-          ok: true, 
-          message: result.modifiedCount > 0 ? 'Item updated.' : 'No changes detected (data was identical).', 
-          id: id,
-          _id: objectId ? String(objectId) : undefined // Send back the ID
-      }));
+      res.end(JSON.stringify(updated));
       return;
-      
     } catch (err) {
       console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
@@ -155,10 +168,9 @@ export default async function handler(req, res) {
       res.end(JSON.stringify({ error: 'Failed to update menu item.', reason: err.message }));
       return;
     } finally {
-      // Ensure the client is closed regardless of success or failure
+      // Ensure connection is always closed
       if (client) {
-        // The connectMongo() might be used outside this, but the client we created here should be closed.
-        await client.close().catch(e => console.error("Error closing MongoDB client:", e)); 
+        await client.close();
       }
     }
   }
