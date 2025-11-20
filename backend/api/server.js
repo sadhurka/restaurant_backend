@@ -1,3 +1,5 @@
+import { MongoClient, ObjectId } from "mongodb";
+
 // small helper to mask URIs in logs
 function maskUri(uri) {
   if (!uri) return '';
@@ -15,6 +17,17 @@ function safeJson(res, status, obj) {
 }
 
 export default async function handler(req, res) {
+  // Enable CORS for all origins
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+
+  // Handle preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   // --- Add: Log incoming Authorization header for 401 debugging ---
   const authHeader = req.headers.authorization || null;
   const maskedAuth = authHeader ? `${authHeader.substring(0, 12)}...` : 'Not Present';
