@@ -69,16 +69,13 @@ export default async function handler(req, res) {
     }
   }
 
- // menu.js - Replace the ENTIRE 'if (req.method === "PUT")' block with this:
-
- // menu.js - REVISED PUT HANDLER
+// menu.js - FINAL REVISED PUT HANDLER
 
   if (req.method === 'PUT') {
-    let client; // Declare client here so it's accessible in the finally block
+    let client;
     try {
       const payload = await getParsedBody(req);
-      console.log('PUT /api/menu payload:', payload); // DEBUG
-
+      
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -91,75 +88,71 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Missing id for update' }));
         return;
       }
-      
-      // Removed redundant 'await connectMongo()' before client creation
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing payload.' }));
         return;
       }
+
       const { MongoClient, ObjectId } = await import('mongodb');
-      client = await MongoClient.connect(process.env.MONGODB_URI); // Assign client here
+      client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
       let filter;
       let objectId = null;
       try {
+        // 1. Attempt to match by MongoDB's unique _id (ObjectId)
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
+        // 2. Fallback to a custom string 'id' field
         filter = { id: String(id) };
       }
 
-      // Only allow updatable fields and always set both description and desc
       const allowed = {};
       ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
-      // Always sync description and desc
       const descValue = payload.description ?? payload.desc ?? '';
       allowed.description = descValue;
       allowed.desc = descValue;
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
-      if ('_id' in allowed) delete allowed._id;
+      if ('_id' in allowed) delete allowed._id; 
 
       const result = await collection.updateOne(filter, { $set: allowed });
 
-      // Log for debugging
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
       if (result.matchedCount === 0) {
+        // Item not found
         res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
 
-      // Always return the updated document from the database, or fallback to allowed + id
-      let updated = null;
-      if (objectId) {
-        updated = await collection.findOne({ _id: objectId });
-      } else {
-        updated = await collection.findOne({ id: String(id) });
-      }
-
-      if (!updated) {
-        // Fallback: return the allowed fields and id so frontend treats as success
-        const fallback = { ...allowed };
-        if (objectId) fallback._id = String(objectId); // <--- CRITICAL FIX: Convert ObjectId to string
-        else fallback.id = id;
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(fallback));
-        return;
-      }
-
+      // We rely solely on the success of updateOne. We do NOT attempt findOne().
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify(updated));
+      
+      const responseData = { 
+          ok: true, 
+          modified: result.modifiedCount,
+          id: objectId ? String(objectId) : id
+      };
+      
+      if (result.modifiedCount === 0) {
+          // Send a warning/info but keep 200 OK so frontend reloads anyway
+          responseData.message = 'Item found, but no changes were applied (data was identical or filter was wrong).';
+      } else {
+          responseData.message = 'Item updated successfully.';
+      }
+
+      res.end(JSON.stringify(responseData));
       return;
+      
     } catch (err) {
       console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
@@ -173,7 +166,6 @@ export default async function handler(req, res) {
       }
     }
   }
-
   if (req.method === 'DELETE') {
     try {
       let id = req.query.id;
