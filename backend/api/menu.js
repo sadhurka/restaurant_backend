@@ -134,7 +134,14 @@ export default async function handler(req, res) {
         return;
       }
 
-      // Always return the updated document from the database, or fallback to allowed + id
+      if (result.modifiedCount === 0) {
+        await client.close();
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ ok: true, message: 'No changes detected.' }));
+        return;
+      }
+
       let updated = null;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
@@ -142,17 +149,6 @@ export default async function handler(req, res) {
         updated = await collection.findOne({ id: String(id) });
       }
       await client.close();
-
-      if (!updated) {
-        // Fallback: return the allowed fields and id so frontend treats as success
-        const fallback = { ...allowed };
-        if (objectId) fallback._id = objectId;
-        else fallback.id = id;
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(fallback));
-        return;
-      }
 
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
