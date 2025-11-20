@@ -20,12 +20,28 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || ''; // empty means no origin rest
 // <-- added: allow configuring whether to send Access-Control-Allow-Credentials -->
 const CORS_ALLOW_CREDENTIALS = (process.env.CORS_ALLOW_CREDENTIALS === 'true') || false;
 
-if (CORS_ORIGIN) {
-  app.use(cors({ origin: CORS_ORIGIN }));
-} else {
-  // if CORS_ORIGIN not set, allow all origins (explicit) to maintain previous behavior
-  app.use(cors());
-}
+const corsOptions = {
+  origin: CORS_ORIGIN,
+  credentials: CORS_ALLOW_CREDENTIALS
+};
+
+app.use(cors(corsOptions));
+
+// Always allow all origins for CORS (for local dev and frontend access)
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200
+}));
+
+// Fix Express v5 wildcard error: use '/' for OPTIONS
+app.options('/', cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200
+}));
 
 const PORT = process.env.PORT || 3000;
 
@@ -433,6 +449,35 @@ app.get('/api/menu', async (req, res) => {
   } catch (error) {
     console.error('Error reading menu data:', error);
     res.status(500).json({ error: 'Failed to read menu data' });
+  }
+});
+
+// Add PUT /api/menu/:id for updating menu items
+app.put('/api/menu/:id', async (req, res) => {
+  try {
+    if (!MONGODB_URI) return res.status(500).json({ error: 'No MongoDB configured.' });
+    if (!mongoClient) await connectMongo();
+    if (!mongoClient || !menuCollection) return res.status(502).json({ error: 'MongoDB not connected.' });
+
+    const id = req.params.id;
+    const payload = req.body;
+    if (!id || !payload) return res.status(400).json({ error: 'Missing id or payload.' });
+
+    let filter = { $or: [{ _id: id }, { id }] };
+    let objectId;
+    try { objectId = new (await import('mongodb')).ObjectId(id); } catch {}
+    if (objectId) filter.$or.unshift({ _id: objectId });
+
+    const update = { $set: payload };
+    const result = await menuCollection.updateOne(filter, update);
+
+    if (result.matchedCount === 0) return res.status(404).json({ error: 'Menu item not found.' });
+
+    const updated = await menuCollection.findOne(filter);
+    res.json(updated);
+  } catch (err) {
+    console.error('PUT /api/menu/:id error:', err);
+    res.status(500).json({ error: 'Failed to update menu item.' });
   }
 });
 
