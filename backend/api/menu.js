@@ -1,5 +1,24 @@
-// Add POST handler for /api/menu to allow adding foods (for Vercel serverless)
 import { expressApp as app, connectMongo, getLastMongoError } from '../index.js';
+
+// Helper to parse JSON body if not already parsed (for Vercel serverless)
+async function getParsedBody(req) {
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) return req.body;
+  if (req.body && typeof req.body === 'string') {
+    try { return JSON.parse(req.body); } catch {}
+  }
+  // Try to read raw body (Vercel serverless)
+  if (typeof req.text === 'function') {
+    try { return JSON.parse(await req.text()); } catch {}
+  }
+  // Try to read from stream (Node.js)
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); } catch { resolve({}); }
+    });
+  });
+}
 
 export default async function handler(req, res) {
   // --- Add CORS headers for all responses ---
@@ -18,14 +37,13 @@ export default async function handler(req, res) {
       if (process.env.MONGODB_URI) {
         await connectMongo();
       }
-      const payload = req.body;
+      const payload = await getParsedBody(req);
       if (!payload || !payload.title || !payload.category || !payload.price) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing required fields.' }));
         return;
       }
-      // Use the same logic as in index.js
       const { MongoClient } = await import('mongodb');
       const client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
@@ -54,11 +72,7 @@ export default async function handler(req, res) {
   // Handle PUT /api/menu/:id for updating food
   if (req.method === 'PUT') {
     try {
-      // Parse body if needed (Vercel may not parse JSON automatically)
-      let payload = req.body;
-      if (typeof payload === 'string') {
-        try { payload = JSON.parse(payload); } catch {}
-      }
+      const payload = await getParsedBody(req);
       // Extract id from URL: /api/menu/:id
       let id = req.query.id;
       if (!id && req.url) {
