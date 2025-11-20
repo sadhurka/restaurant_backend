@@ -71,8 +71,10 @@ export default async function handler(req, res) {
 
  // menu.js - Replace the ENTIRE 'if (req.method === "PUT")' block with this:
 
+ // menu.js - REVISED PUT HANDLER
+
   if (req.method === 'PUT') {
-    let client; // Declare client outside try block for access in finally
+    let client; // Declare client here so it's accessible in the finally block
     try {
       const payload = await getParsedBody(req);
       console.log('PUT /api/menu payload:', payload); // DEBUG
@@ -89,9 +91,8 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Missing id for update' }));
         return;
       }
-      if (process.env.MONGODB_URI) {
-        await connectMongo();
-      }
+      
+      // Removed redundant 'await connectMongo()' before client creation
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
@@ -139,7 +140,6 @@ export default async function handler(req, res) {
       // Always return the updated document from the database, or fallback to allowed + id
       let updated = null;
       if (objectId) {
-        // Only attempt findOne if objectId was successfully parsed
         updated = await collection.findOne({ _id: objectId });
       } else {
         updated = await collection.findOne({ id: String(id) });
@@ -156,7 +156,6 @@ export default async function handler(req, res) {
         return;
       }
 
-      // If updated document was found
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(updated));
@@ -165,7 +164,7 @@ export default async function handler(req, res) {
       console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ error: 'Failed to update menu item.', reason: err.message }));
+      res.end(JSON.stringify({ error: 'Failed to update menu item.', reason: err.message || String(err) }));
       return;
     } finally {
       // Ensure connection is always closed
