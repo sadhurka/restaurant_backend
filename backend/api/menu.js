@@ -69,13 +69,18 @@ export default async function handler(req, res) {
     }
   }
 
- if (req.method === 'PUT') {
+// menu.js - FINAL, MOST DEFENSIVE PUT HANDLER (if previous failed due to modified: 0)
+
+  if (req.method === 'PUT') {
     let client;
     try {
+      // 1. Get the payload
       const payload = await getParsedBody(req);
-      console.log('PUT /api/menu payload:', payload); // 🛑 CRITICAL LOG 1: Check if new data is here
+      console.log('PUT /api/menu payload:', payload); 
 
+      // 2. Identify ID
       let id = req.query.id;
+      // ... (ID extraction logic remains the same) ...
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
         if (match) id = match[1];
@@ -87,9 +92,6 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Missing id for update' }));
         return;
       }
-      if (process.env.MONGODB_URI) {
-        await connectMongo();
-      }
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
@@ -97,6 +99,7 @@ export default async function handler(req, res) {
         return;
       }
       
+      // 3. Connect to DB
       const { MongoClient, ObjectId } = await import('mongodb');
       client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
@@ -111,46 +114,92 @@ export default async function handler(req, res) {
         filter = { id: String(id) };
       }
 
+      // 4. Retrieve the existing document to compare
+      const existingDoc = await collection.findOne(filter);
+      if (!existingDoc) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: 'Menu item not found.' }));
+          return;
+      }
+      
       const allowed = {};
-      ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
-        if (payload[k] !== undefined) allowed[k] = payload[k];
+      let changedCount = 0;
+      
+      // Define fields we can update
+      const fields = ['category', 'title', 'price', 'image', 'description', 'desc'];
+      
+      // Compare and build update payload
+      fields.forEach(k => {
+          let incomingValue = payload[k];
+          let existingValue = existingDoc[k];
+
+          // Special handling for price
+          if (k === 'price') {
+              // Convert both to a string for comparison to avoid numeric type conflicts
+              const incomingPrice = String(incomingValue);
+              const existingPrice = String(existingValue);
+              
+              if (incomingPrice !== existingPrice) {
+                  // Only convert to Number if it's a valid change. 
+                  // If DB is expecting string, this will still update it as a Number.
+                  // But if no change, we skip the update to avoid modified: 0.
+                  allowed[k] = Number(incomingValue);
+                  changedCount++;
+              }
+              return;
+          }
+
+          // Handle description/desc
+          if (k === 'description' || k === 'desc') {
+              // Ensure we are comparing the effective description
+              const incomingDesc = String(payload.description ?? payload.desc ?? '');
+              const existingDesc = String(existingDoc.description ?? existingDoc.desc ?? '');
+              
+              if (incomingDesc !== existingDesc) {
+                  allowed['description'] = incomingDesc;
+                  allowed['desc'] = incomingDesc;
+                  changedCount++;
+              }
+              return;
+          }
+
+          // General fields
+          if (incomingValue !== undefined && String(incomingValue) !== String(existingValue)) {
+              allowed[k] = incomingValue;
+              changedCount++;
+          }
       });
       
-      const descValue = payload.description ?? payload.desc ?? '';
-      allowed.description = descValue;
-      allowed.desc = descValue;
+      if ('_id' in allowed) delete allowed._id; 
       
-      // Ensure price is a number, handling empty string as 0 if needed, or remove it.
-      if (allowed.price !== undefined) {
-          const priceValue = Number(allowed.price);
-          allowed.price = !isNaN(priceValue) ? priceValue : 0;
+      // 5. Check if any actual changes were detected
+      if (changedCount === 0) {
+          console.warn('PUT /api/menu/:id (SKIP): No changes detected between payload and DB.');
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ 
+              ok: true, 
+              modified: 0, 
+              message: 'Item found, but no changes were detected.'
+          }));
+          return;
       }
-      if ('_id' in allowed) delete allowed._id;
 
+      // 6. Perform the update
       const result = await collection.updateOne(filter, { $set: allowed });
 
-      // 🛑 CRITICAL LOG 2: Check MongoDB's response
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
-      if (result.matchedCount === 0) {
-        res.statusCode = 404;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'Menu item not found.' }));
-        return;
-      }
-
-      // --- SIMPLIFIED SUCCESS RESPONSE ---
-      // We rely on the frontend's load() to refresh, avoiding error-prone findOne()
+      // 7. Get the updated document and return
+      const updated = await collection.findOne(filter);
+      
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ 
-          ok: true, 
-          modified: result.modifiedCount,
-          message: result.modifiedCount > 0 ? 'Item updated successfully.' : 'Item found, but no changes were detected (data was identical).'
-      }));
+      res.end(JSON.stringify(updated));
       return;
       
     } catch (err) {
+      // ... (Error handling) ...
       console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
