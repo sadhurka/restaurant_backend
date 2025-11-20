@@ -69,11 +69,12 @@ export default async function handler(req, res) {
     }
   }
 
-  if (req.method === 'PUT') {
+ if (req.method === 'PUT') {
     let client;
     try {
       const payload = await getParsedBody(req);
-      
+      console.log('PUT /api/menu payload:', payload); // 🛑 CRITICAL LOG 1: Check if new data is here
+
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -86,13 +87,16 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Missing id for update' }));
         return;
       }
+      if (process.env.MONGODB_URI) {
+        await connectMongo();
+      }
       if (!payload) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing payload.' }));
         return;
       }
-
+      
       const { MongoClient, ObjectId } = await import('mongodb');
       client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
@@ -107,39 +111,25 @@ export default async function handler(req, res) {
         filter = { id: String(id) };
       }
 
-      // --- Payload Construction ---
       const allowed = {};
-      const fields = ['category', 'title', 'price', 'image', 'description', 'desc'];
-      fields.forEach(k => {
+      ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
       
       const descValue = payload.description ?? payload.desc ?? '';
       allowed.description = descValue;
       allowed.desc = descValue;
-
-      // Ensure price is a valid number, otherwise delete it from the update payload
+      
+      // Ensure price is a number, handling empty string as 0 if needed, or remove it.
       if (allowed.price !== undefined) {
           const priceValue = Number(allowed.price);
-          if (!isNaN(priceValue) && priceValue >= 0) {
-              allowed.price = priceValue;
-          } else {
-              delete allowed.price;
-          }
+          allowed.price = !isNaN(priceValue) ? priceValue : 0;
       }
-      
-      if ('_id' in allowed) delete allowed._id; 
-      // --- End Payload Construction ---
+      if ('_id' in allowed) delete allowed._id;
 
-      if (Object.keys(allowed).length === 0) {
-        res.statusCode = 400;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'No valid fields provided for update.' }));
-        return;
-      }
-      
       const result = await collection.updateOne(filter, { $set: allowed });
 
+      // 🛑 CRITICAL LOG 2: Check MongoDB's response
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
       if (result.matchedCount === 0) {
@@ -148,26 +138,15 @@ export default async function handler(req, res) {
         res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
-      
-      // 🛑 CRITICAL DEBUG STEP: Force an error if the item exists but wasn't modified.
-      if (result.modifiedCount === 0) {
-          res.statusCode = 409; // Conflict (or 400 Bad Request)
-          res.setHeader('content-type', 'application/json');
-          // This message will appear on the frontend and in your logs
-          res.end(JSON.stringify({ 
-              error: 'Update failed: Item found but NO fields were modified. This might mean the data is identical or a field type is blocking the update.', 
-              details: allowed
-          }));
-          return;
-      }
 
-      // Success response: modifiedCount > 0
+      // --- SIMPLIFIED SUCCESS RESPONSE ---
+      // We rely on the frontend's load() to refresh, avoiding error-prone findOne()
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ 
           ok: true, 
-          message: 'Item updated successfully.',
-          id: objectId ? String(objectId) : id
+          modified: result.modifiedCount,
+          message: result.modifiedCount > 0 ? 'Item updated successfully.' : 'Item found, but no changes were detected (data was identical).'
       }));
       return;
       
