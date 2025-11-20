@@ -128,32 +128,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Delegate to Express app with defensive error handling
-  try {
-    const result = app(req, res);
-    if (result && typeof result.then === 'function') {
-      await result;
-    }
-
-    // If response not sent by Express, ensure we close connection (best-effort)
-    if (!res.writableEnded) {
-      try { res.end(); } catch (_) { /* ignore */ }
-    }
-
-    console.log(`[serverless] ${req.method} ${req.url} handled in ${Date.now() - start}ms`);
-  } catch (err) {
-    console.error('[serverless] handler caught error:', err && (err.stack || err));
-    const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
-    if (!res.writableEnded) {
-      safeJson(res, 500, {
-        error: 'Server handler error',
-        reason: err && (err.message || String(err)),
-        lastMongoError: last || null,
-        hint: 'Check Vercel function logs and /debug/connect output'
-      });
-    }
-  }
-
+  // Move MongoDB logic BEFORE Express app delegation
   const client = await MongoClient.connect(process.env.MONGODB_URI);
   const db = client.db(process.env.MONGODB_DB);
   const collection = db.collection(process.env.MONGODB_COLLECTION);
@@ -165,25 +140,29 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "PUT") {
-    // Accept id from either query or body, and ensure ObjectId conversion
+    // Accept id from either query, body.id, or body._id
     const id = req.query.id || req.body.id || req.body._id;
     const payload = req.body;
     if (!id || !payload) {
       await client.close();
       return res.status(400).json({ error: "Missing id or payload" });
     }
+    // Remove _id from payload to avoid immutable field error
+    if ('_id' in payload) delete payload._id;
     let filter;
     if (ObjectId.isValid(id)) {
       filter = { _id: new ObjectId(id) };
     } else {
-      filter = { _id: id };
+      filter = { id };
     }
-    // Always update updatedAt for cache busting
-    payload.updatedAt = new Date().toISOString();
-
+    // Only update allowed fields (title, price, image, category, badge, tags, description, desc)
+    const allowed = {};
+    ['title', 'price', 'image', 'category', 'badge', 'tags', 'description', 'desc'].forEach(k => {
+      if (payload[k] !== undefined) allowed[k] = payload[k];
+    });
     const result = await collection.updateOne(
       filter,
-      { $set: payload }
+      { $set: allowed }
     );
     if (result.matchedCount === 0) {
       await client.close();
@@ -191,7 +170,7 @@ export default async function handler(req, res) {
     }
     const updated = await collection.findOne(filter);
     await client.close();
-    return res.status(200).json({ ok: true, updated });
+    return res.status(200).json(updated);
   }
 
   await client.close();
