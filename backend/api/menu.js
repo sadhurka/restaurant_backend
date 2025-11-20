@@ -32,6 +32,14 @@ export default async function handler(req, res) {
   }
 
   // --- Only handle POST/PUT/DELETE here, let GET fall through to Express ---
+  // --- Extract id from /api/menu/:id or ?id=... for PUT/DELETE ---
+  let id = req.query.id;
+  if (!id && req.url) {
+    const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+    if (match) id = match[1];
+  }
+
+  // --- POST /api/menu (create) ---
   if (req.method === 'POST') {
     try {
       if (process.env.MONGODB_URI) {
@@ -69,19 +77,12 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- PUT /api/menu/:id or /api/menu?id=... (update) ---
   if (req.method === 'PUT') {
     try {
       const payload = await getParsedBody(req);
-      console.log('PUT /api/menu payload:', payload); // DEBUG
-
-      let id = req.query.id;
-      if (!id && req.url) {
-        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
-        if (match) id = match[1];
-      }
       if (!id && payload) id = payload._id || payload.id;
       if (!id) {
-        console.log('PUT /api/menu: No id found in query or payload');
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Missing id for update' }));
@@ -90,19 +91,12 @@ export default async function handler(req, res) {
       if (process.env.MONGODB_URI) {
         await connectMongo();
       }
-      if (!payload) {
-        res.statusCode = 400;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'Missing payload.' }));
-        return;
-      }
       const { MongoClient, ObjectId } = await import('mongodb');
       const client = await MongoClient.connect(process.env.MONGODB_URI);
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
-      // Try both _id and id for filter
-      let filter = {};
+      let filter;
       let objectId = null;
       try {
         objectId = new ObjectId(id);
@@ -110,12 +104,7 @@ export default async function handler(req, res) {
       } catch {
         filter = { id: String(id) };
       }
-      // If both _id and id exist, try both (for robustness)
-      if (payload._id && payload.id && payload._id !== payload.id) {
-        filter = { $or: [{ _id: new ObjectId(payload._id) }, { id: String(payload.id) }] };
-      }
 
-      // Always set both description and desc fields, even if only one is present
       let descValue = '';
       if ('description' in payload) descValue = payload.description;
       else if ('desc' in payload) descValue = payload.desc;
@@ -129,39 +118,29 @@ export default async function handler(req, res) {
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
       if ('_id' in allowed) delete allowed._id;
 
-      console.log('PUT /api/menu update filter:', filter); // DEBUG
-      console.log('PUT /api/menu update $set:', allowed);  // DEBUG
-
       const result = await collection.updateOne(filter, { $set: allowed });
 
-      console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
-
-      // --- CHANGED: Always return the updated document if matched, even if modifiedCount is 0 ---
       if (result.matchedCount === 0) {
         await client.close();
         res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'Menu item not found.', filter, payload }));
+        res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
 
       let updated = null;
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
-      } else if (payload.id) {
-        updated = await collection.findOne({ id: String(payload.id) });
       } else {
-        updated = await collection.findOne({ id: String(id) });
+        Aupdated = await collection.findOne({ id: String(id) });
       }
       await client.close();
 
-      // --- CHANGED: Always return the updated doc, even if no fields changed ---
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(updated));
       return;
     } catch (err) {
-      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
@@ -169,15 +148,13 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- DELETE /api/menu/:id or /api/menu?id=... (delete) ---
   if (req.method === 'DELETE') {
     try {
-      let id = req.query.id;
-      if (!id && req.url) {
-        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
-        if (match) id = match[1];
+      if (!id) {
+        const payload = await getParsedBody(req);
+        if (payload) id = payload._id || payload.id;
       }
-      const payload = await getParsedBody(req);
-      if (!id && payload) id = payload._id || payload.id;
       if (!id) {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
