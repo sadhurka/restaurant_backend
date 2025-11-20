@@ -72,7 +72,7 @@ export default async function handler(req, res) {
   if (req.method === 'PUT') {
     try {
       const payload = await getParsedBody(req);
-      console.log('PUT /api/menu payload:', payload); // <-- DEBUG LOG
+      console.log('PUT /api/menu payload:', payload); // DEBUG
 
       let id = req.query.id;
       if (!id && req.url) {
@@ -100,7 +100,6 @@ export default async function handler(req, res) {
       const db = client.db(process.env.MONGODB_DB);
       const collection = db.collection(process.env.MONGODB_COLLECTION);
 
-      // Always use _id for update if possible
       let filter;
       let objectId = null;
       try {
@@ -111,10 +110,9 @@ export default async function handler(req, res) {
       }
 
       // Always set both description and desc fields, even if only one is present
-      const descValue =
-        (payload.description !== undefined ? payload.description : undefined) ??
-        (payload.desc !== undefined ? payload.desc : undefined) ??
-        '';
+      let descValue = '';
+      if ('description' in payload) descValue = payload.description;
+      else if ('desc' in payload) descValue = payload.desc;
 
       const allowed = {};
       ['category', 'title', 'price', 'image'].forEach(k => {
@@ -125,8 +123,8 @@ export default async function handler(req, res) {
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
       if ('_id' in allowed) delete allowed._id;
 
-      console.log('PUT /api/menu update filter:', filter); // <-- DEBUG LOG
-      console.log('PUT /api/menu update $set:', allowed);  // <-- DEBUG LOG
+      console.log('PUT /api/menu update filter:', filter); // DEBUG
+      console.log('PUT /api/menu update $set:', allowed);  // DEBUG
 
       const result = await collection.updateOne(filter, { $set: allowed });
 
