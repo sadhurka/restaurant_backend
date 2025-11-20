@@ -93,7 +93,7 @@ export default async function handler(req, res) {
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
-        filter = { id: typeof id === 'string' ? id : String(id) };
+        filter = { id: String(id) };
       }
 
       // Only update allowed fields
@@ -111,21 +111,23 @@ export default async function handler(req, res) {
       // Debug: log what was attempted
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
-      // If nothing was modified, still return the found document (do not treat as error)
-      let updated;
-      if (objectId) {
-        updated = await collection.findOne({ _id: objectId });
-      } else {
-        updated = await collection.findOne({ id: typeof id === 'string' ? id : String(id) });
-      }
-      await client.close();
-
-      if (!updated) {
+      // If nothing was matched, return 404
+      if (result.matchedCount === 0) {
+        await client.close();
         res.statusCode = 404;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: 'Menu item not found.' }));
         return;
       }
+
+      // Always return the updated document (even if modifiedCount is 0)
+      let updated;
+      if (objectId) {
+        updated = await collection.findOne({ _id: objectId });
+      } else {
+        updated = await collection.findOne({ id: String(id) });
+      }
+      await client.close();
 
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
