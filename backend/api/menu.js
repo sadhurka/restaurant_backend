@@ -128,10 +128,18 @@ export default async function handler(req, res) {
       const result = await collection.updateOne(filter, { $set: allowed });
 
       if (result.matchedCount === 0) {
+        // --- If not found, create new document with given id (upsert) ---
+        const docToInsert = { ...allowed };
+        if (objectId) docToInsert._id = objectId;
+        else docToInsert.id = id;
+        await collection.insertOne(docToInsert);
+        const created = objectId
+          ? await collection.findOne({ _id: objectId })
+          : await collection.findOne({ id: id });
         await client.close();
-        res.statusCode = 404;
+        res.statusCode = 201;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'Menu item not found.' }));
+        res.end(JSON.stringify(created));
         return;
       }
 
@@ -148,7 +156,6 @@ export default async function handler(req, res) {
       res.end(JSON.stringify(updated));
       return;
     } catch (err) {
-      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
