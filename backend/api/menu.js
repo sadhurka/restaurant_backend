@@ -2,6 +2,16 @@
 import { expressApp as app, connectMongo, getLastMongoError } from '../index.js';
 
 export default async function handler(req, res) {
+  // --- Add CORS headers for all responses ---
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 200;
+    res.end();
+    return;
+  }
+
   // Handle POST /api/menu directly for add food
   if (req.method === 'POST') {
     try {
