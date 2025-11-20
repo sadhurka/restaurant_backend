@@ -128,7 +128,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Move MongoDB logic BEFORE Express app delegation
+  // Only handle GET and PUT here, skip Express delegation for these
   const client = await MongoClient.connect(process.env.MONGODB_URI);
   const db = client.db(process.env.MONGODB_DB);
   const collection = db.collection(process.env.MONGODB_COLLECTION);
@@ -144,7 +144,8 @@ export default async function handler(req, res) {
     let id = req.query.id;
     if (!id && req.body) id = req.body._id || req.body.id;
     const payload = req.body;
-    if (!id || !payload || typeof payload !== 'object') {
+    // Fix: Also check for empty string id (sometimes sent as "")
+    if (!id || id === "" || !payload || typeof payload !== 'object') {
       await client.close();
       return res.status(400).json({ error: "Missing id or payload" });
     }
@@ -178,6 +179,16 @@ export default async function handler(req, res) {
     return res.status(200).json(updated);
   }
 
-  await client.close();
-  res.status(404).json({ error: "Not found" });
+  // For all other methods, fallback to Express app (for compatibility)
+  try {
+    await mod.expressApp(req, res);
+  } catch (err) {
+    console.error('[serverless] expressApp handler error:', err && (err.stack || err));
+    safeJson(res, 500, {
+      error: 'Express app handling error',
+      reason: err && (err.message || String(err)),
+      stack: err && (err.stack || null),
+      hint: 'Check Vercel function logs for runtime errors in the Express app.'
+    });
+  }
 }
