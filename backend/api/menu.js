@@ -32,14 +32,6 @@ export default async function handler(req, res) {
   }
 
   // --- Only handle POST/PUT/DELETE here, let GET fall through to Express ---
-  // --- Extract id from /api/menu/:id or ?id=... for PUT/DELETE ---
-  let id = req.query.id;
-  if (!id && req.url) {
-    const match = req.url.match(/\/api\/menu\/([^/?]+)/);
-    if (match) id = match[1];
-  }
-
-  // --- POST /api/menu (create) ---
   if (req.method === 'POST') {
     try {
       if (process.env.MONGODB_URI) {
@@ -77,10 +69,15 @@ export default async function handler(req, res) {
     }
   }
 
-  // --- PUT /api/menu/:id or /api/menu?id=... (update) ---
   if (req.method === 'PUT') {
     try {
       const payload = await getParsedBody(req);
+      // --- robust id extraction ---
+      let id = req.query.id;
+      if (!id && req.url) {
+        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+        if (match) id = match[1];
+      }
       if (!id && payload) id = payload._id || payload.id;
       if (!id) {
         res.statusCode = 400;
@@ -90,6 +87,12 @@ export default async function handler(req, res) {
       }
       if (process.env.MONGODB_URI) {
         await connectMongo();
+      }
+      if (!payload) {
+        res.statusCode = 400;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'Missing payload.' }));
+        return;
       }
       const { MongoClient, ObjectId } = await import('mongodb');
       const client = await MongoClient.connect(process.env.MONGODB_URI);
@@ -105,6 +108,7 @@ export default async function handler(req, res) {
         filter = { id: String(id) };
       }
 
+      // Always set both description and desc fields, even if only one is present
       let descValue = '';
       if ('description' in payload) descValue = payload.description;
       else if ('desc' in payload) descValue = payload.desc;
@@ -117,6 +121,9 @@ export default async function handler(req, res) {
       allowed.desc = descValue;
       if (allowed.price !== undefined) allowed.price = Number(allowed.price);
       if ('_id' in allowed) delete allowed._id;
+
+      // --- always update updatedAt for cache busting ---
+      allowed.updatedAt = new Date().toISOString();
 
       const result = await collection.updateOne(filter, { $set: allowed });
 
@@ -132,7 +139,7 @@ export default async function handler(req, res) {
       if (objectId) {
         updated = await collection.findOne({ _id: objectId });
       } else {
-        Aupdated = await collection.findOne({ id: String(id) });
+        updated = await collection.findOne({ id: String(id) });
       }
       await client.close();
 
@@ -141,6 +148,7 @@ export default async function handler(req, res) {
       res.end(JSON.stringify(updated));
       return;
     } catch (err) {
+      console.error('PUT /api/menu/:id error:', err);
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'Failed to update menu item.' }));
@@ -148,9 +156,14 @@ export default async function handler(req, res) {
     }
   }
 
-  // --- DELETE /api/menu/:id or /api/menu?id=... (delete) ---
   if (req.method === 'DELETE') {
     try {
+      // --- Extract id from /api/menu/:id or ?id=... for DELETE ---
+      let id = req.query.id;
+      if (!id && req.url) {
+        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+        if (match) id = match[1];
+      }
       if (!id) {
         const payload = await getParsedBody(req);
         if (payload) id = payload._id || payload.id;
