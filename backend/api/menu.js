@@ -136,6 +136,7 @@ export default async function handler(req, res) {
 
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
+      // --- CHANGED: Always return the updated document if matched, even if modifiedCount is 0 ---
       if (result.matchedCount === 0) {
         await client.close();
         res.statusCode = 404;
@@ -154,6 +155,7 @@ export default async function handler(req, res) {
       }
       await client.close();
 
+      // --- CHANGED: Always return the updated doc, even if no fields changed ---
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(updated));
