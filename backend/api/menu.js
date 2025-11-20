@@ -101,11 +101,36 @@ export default async function handler(req, res) {
       ['category', 'title', 'price', 'image', 'description', 'desc'].forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
+
+      // Remove unchanged fields by comparing with current doc
+      let currentDoc = null;
+      if (objectId) {
+        currentDoc = await collection.findOne({ _id: objectId });
+      } else {
+        currentDoc = await collection.findOne({ id: typeof id === 'string' ? id : String(id) });
+      }
+      if (!currentDoc) {
+        await client.close();
+        res.statusCode = 404;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'Menu item not found.' }));
+        return;
+      }
+      // Remove fields that are not changing
+      Object.keys(allowed).forEach(k => {
+        if (
+          (k === 'price' && Number(currentDoc[k]) === Number(allowed[k])) ||
+          (k !== 'price' && String(currentDoc[k] ?? '') === String(allowed[k] ?? ''))
+        ) {
+          delete allowed[k];
+        }
+      });
+
       if (Object.keys(allowed).length === 0) {
         await client.close();
-        res.statusCode = 400;
+        res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ error: 'No updatable fields in payload.' }));
+        res.end(JSON.stringify(currentDoc));
         return;
       }
 
