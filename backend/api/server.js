@@ -181,14 +181,13 @@ export default async function handler(req, res) {
     }
     return safeJson(res, 200, { ok: true });
   }
-// server.js - ADD THIS BLOCK after the DELETE handler
 
   // --- ADD: Handle PUT (update food) ---
   if (req.method === "PUT") {
     let client;
     try {
-      const payload = req.body; // Use req.body directly
-
+      // Accept JSON body (Vercel parses req.body for serverless)
+      const payload = req.body && typeof req.body === 'object' ? req.body : {};
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -209,100 +208,67 @@ export default async function handler(req, res) {
       let filter;
       let objectId = null;
       try {
-        // Attempt to match by MongoDB's unique _id (ObjectId)
         objectId = new ObjectId(id);
         filter = { _id: objectId };
       } catch {
-        // Fallback to a custom string 'id' field
         filter = { id: String(id) };
       }
 
-      // --- Payload Construction ---
+      // Only allow updatable fields
       const allowed = {};
       const fields = ['category', 'title', 'price', 'image', 'description', 'desc'];
       fields.forEach(k => {
         if (payload[k] !== undefined) allowed[k] = payload[k];
       });
-      
+      // Always set both description and desc
       const descValue = payload.description ?? payload.desc ?? '';
       allowed.description = descValue;
       allowed.desc = descValue;
-
-      // Ensure price is a valid number
       if (allowed.price !== undefined) {
-          const priceValue = Number(allowed.price);
-          if (!isNaN(priceValue) && priceValue >= 0) {
-              allowed.price = priceValue;
-          } else {
-              delete allowed.price; // Remove invalid price to prevent update failure
-          }
+        const priceValue = Number(allowed.price);
+        if (!isNaN(priceValue) && priceValue >= 0) {
+          allowed.price = priceValue;
+        } else {
+          delete allowed.price;
+        }
       }
-      
-      if ('_id' in allowed) delete allowed._id; 
-      // --- End Payload Construction ---
+      if ('_id' in allowed) delete allowed._id;
+      allowed.updatedAt = new Date().toISOString();
 
       if (Object.keys(allowed).length === 0) {
         return safeJson(res, 400, { error: 'No valid fields provided for update.' });
       }
-      
+
       const result = await collection.updateOne(filter, { $set: allowed });
 
       console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
 
       if (result.matchedCount === 0) {
+        if (client) await client.close();
         return safeJson(res, 404, { error: 'Menu item not found.' });
       }
 
-      // If item was found but no modifications were made, send a specific error (409)
       if (result.modifiedCount === 0) {
-          return safeJson(res, 409, { 
-              error: 'Update failed: Item found but NO fields were modified (data was identical).', 
-              details: allowed 
-          });
+        if (client) await client.close();
+        return safeJson(res, 409, {
+          error: 'Update failed: Item found but NO fields were modified (data was identical).',
+          details: allowed
+        });
       }
 
       // Success response: modifiedCount > 0
-      return safeJson(res, 200, { 
-          ok: true, 
-          message: 'Item updated successfully.',
-          id: objectId ? String(objectId) : id
+      if (client) await client.close();
+      return safeJson(res, 200, {
+        ok: true,
+        message: 'Item updated successfully.',
+        id: objectId ? String(objectId) : id
       });
-      
     } catch (err) {
+      if (client) await client.close();
       console.error('PUT /api/menu/:id error:', err);
       return safeJson(res, 500, { error: 'Failed to update menu item.', reason: err.message || String(err) });
-    } finally {
-      // Ensure connection is always closed
-      if (client) {
-        await client.close();
-      }
     }
   }
 
-  // Delegate to Express app with defensive error handling (REMAINS THE SAME)
-  // Delegate to Express app with defensive error handling
-  try {
-    const result = app(req, res);
-    if (result && typeof result.then === 'function') {
-      await result;
-    }
-
-    // If response not sent by Express, ensure we close connection (best-effort)
-    if (!res.writableEnded) {
-      try { res.end(); } catch (_) { /* ignore */ }
-    }
-
-    console.log(`[serverless] ${req.method} ${req.url} handled in ${Date.now() - start}ms`);
-  } catch (err) {
-    console.error('[serverless] handler caught error:', err && (err.stack || err));
-    const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
-    if (!res.writableEnded) {
-      safeJson(res, 500, {
-        error: 'Server handler error',
-        reason: err && (err.message || String(err)),
-        lastMongoError: last || null,
-        hint: 'Check Vercel function logs and /debug/connect output'
-      });
-    }
-  }
+  safeJson(res, 404, { error: 'Not found' });
 }
