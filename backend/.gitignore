@@ -17,7 +17,6 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
-/.env
 .DS_Store
 *.suo
 *.ntvs*
@@ -25,3 +24,7 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+# ignore all env files
+*.env
+# keep an example if present
+!.env.example
