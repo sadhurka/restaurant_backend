@@ -2,11 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { fileURLToPath } from 'url';
-
-// Load local .env if present for easier local development
 import dotenv from 'dotenv';
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,19 +14,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// --- Replace hardcoded CORS usage with env-driven config and apply before routes ---
-const CORS_ORIGIN = process.env.CORS_ORIGIN || ''; // empty means no origin restriction by default
-// <-- added: allow configuring whether to send Access-Control-Allow-Credentials -->
-const CORS_ALLOW_CREDENTIALS = (process.env.CORS_ALLOW_CREDENTIALS === 'true') || false;
-
-const corsOptions = {
-  origin: CORS_ORIGIN,
-  credentials: CORS_ALLOW_CREDENTIALS
-};
-
-app.use(cors(corsOptions));
-
-// Always allow all origins for CORS (for local dev and frontend access)
+// CORS configuration - allow all origins for development
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -35,8 +22,7 @@ app.use(cors({
   optionsSuccessStatus: 200
 }));
 
-// Fix Express v5 wildcard error: use '/' for OPTIONS
-app.options('/', cors({
+app.options('*', cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -45,19 +31,13 @@ app.options('/', cors({
 
 const PORT = process.env.PORT || 3000;
 
-
+// Directories for static files
 const dataDir = path.join(__dirname, 'data');
 const fallbackMenuFile = path.join(dataDir, 'menu.json');
-
-// --- Add: define image dirs before they're referenced to avoid ReferenceError ---
 const publicImagesDir = path.join(__dirname, 'public', 'images');
 const imagesDir = path.join(__dirname, 'images');
-// --- end added code ---
 
-// removed automatic creation of data directory to avoid adding files while running
-// (If you want a local fallback, create data/menu.json manually — the server will read it if present.)
-console.log('Static image dirs (prefer in this order):', publicImagesDir, imagesDir);
-
+// Serve static images
 if (fs.existsSync(publicImagesDir)) {
   app.use('/images', express.static(publicImagesDir, { maxAge: '1d' }));
 }
@@ -65,185 +45,112 @@ if (fs.existsSync(imagesDir)) {
   app.use('/images', express.static(imagesDir, { maxAge: '1d' }));
 }
 
-// Serve menu data: prefer MongoDB, otherwise load fallback JSON file
+// MongoDB connection
 let mongoClient = null;
 let menuCollection = null;
-let resolvedCollectionName = null;
-let lastMongoError = null; // <-- added to track last error
+let lastMongoError = null;
 
 const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'menu';
-const MONGODB_COLLECTION = process.env.MONGODB_COLLECTION || 'menudata';
+const MONGODB_DB = process.env.MONGODB_DB || 'restaurant';
+const MONGODB_COLLECTION = process.env.MONGODB_COLLECTION || 'menuitems';
 
-// new: allow tweaking TLS/timeout behavior from environment for debugging
-const MONGODB_TLS = (process.env.MONGODB_TLS || 'auto').toLowerCase(); // 'auto'|'true'|'false'
-const MONGODB_TLS_ALLOW_INVALID = process.env.MONGODB_TLS_ALLOW_INVALID === 'true';
-const MONGODB_SERVER_SELECTION_TIMEOUT_MS = Number(process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS) || 5000;
-
-// build client options
-function getMongoClientOptions() {
-	// default: follow SRV/TLS behavior from connection string; set explicit options for debugging
-	const opts = {
-		serverSelectionTimeoutMS: MONGODB_SERVER_SELECTION_TIMEOUT_MS
-	};
-	if (MONGODB_TLS === 'true' || MONGODB_TLS === 'false') {
-		opts.tls = MONGODB_TLS === 'true';
-	}
-	if (MONGODB_TLS_ALLOW_INVALID) {
-		opts.tlsAllowInvalidCertificates = true;
-	}
-	return opts;
-}
-
-// --- added: helpers to normalize docs and coerce numeric values ---
-function toNumber(val) {
-  if (val == null) return 0;
-  if (typeof val === 'number') return val;
-  if (typeof val === 'object' && typeof val.toString === 'function') {
-    const s = val.toString();
-    const n = parseFloat(s);
-    return Number.isNaN(n) ? 0 : n;
-  }
-  const n = parseFloat(val);
-  return Number.isNaN(n) ? 0 : n;
-}
-
-function normalizeMenuDocs(docs) {
-  if (!Array.isArray(docs)) return [];
-  const looksLikeItem = (o) => o && (o.name || o.title) && (o.price != null || o.image || o.description || o.desc);
-  if (docs.length && looksLikeItem(docs[0])) return docs;
-
-  const items = [];
-  for (const d of docs) {
-    if (Array.isArray(d?.items)) items.push(...d.items);
-    if (Array.isArray(d?.data)) items.push(...d.data);
-    if (Array.isArray(d?.menu)) items.push(...d.menu);
-    if (Array.isArray(d?.categories)) {
-      for (const c of d.categories) {
-        if (Array.isArray(c?.items)) items.push(...c.items);
-      }
-    }
-  }
-  return items;
-}
-// --- end added ---
-
-// small helper to mask URIs in logs
+// Helper: mask URI for logging
 function maskUri(uri) {
   if (!uri) return '';
-  if (uri.length <= 60) return uri.replace(/:[^:@]+@/, ':***@'); // hide password if present
+  if (uri.length <= 60) return uri.replace(/:[^:@]+@/, ':***@');
   return uri.slice(0, 30).replace(/:[^:@]+@/, ':***@') + '...' + uri.slice(-20);
 }
 
-// print masked URI hint
-console.log('ENV HINT: MONGODB_URI set?', !!process.env.MONGODB_URI, ' uri:', maskUri(MONGODB_URI));
+console.log('MONGODB_URI configured:', !!MONGODB_URI, 'URI:', maskUri(MONGODB_URI));
 
-// Rewritten connectMongo with retries and faster failure detection
+// Connect to MongoDB with retry logic
 async function connectMongo(force = false) {
-  if (!MONGODB_URI) return;
+  if (!MONGODB_URI) {
+    console.log('No MONGODB_URI provided, using fallback file mode');
+    return false;
+  }
+  
   try {
-    if (mongoClient && !force) return; // already connected
+    if (mongoClient && !force) return true;
     if (mongoClient && force) {
       try { await mongoClient.close(); } catch (_) {}
       mongoClient = null;
       menuCollection = null;
-      resolvedCollectionName = null;
     }
 
     const maxAttempts = 3;
     let attempt = 0;
-    let lastErr = null;
-
+    
     while (attempt < maxAttempts) {
       attempt++;
       try {
-        // use env-driven options
-        const clientOpts = getMongoClientOptions();
-        console.log(`Mongo: connecting (attempt ${attempt}) serverSelectionTimeoutMS=${clientOpts.serverSelectionTimeoutMS} tls=${clientOpts.tls===undefined?'auto':clientOpts.tls} tlsAllowInvalidCertificates=${!!clientOpts.tlsAllowInvalidCertificates}`);
-        mongoClient = new MongoClient(MONGODB_URI, clientOpts);
+        console.log(`MongoDB connection attempt ${attempt}/${maxAttempts}...`);
+        mongoClient = new MongoClient(MONGODB_URI, {
+          serverSelectionTimeoutMS: 5000,
+          connectTimeoutMS: 10000,
+        });
         await mongoClient.connect();
-        // ping
-        await mongoClient.db().command({ ping: 1 }).catch(() => {});
-        const db = mongoClient.db(MONGODB_DB || undefined);
-
-        // try configured collection first
-        if (MONGODB_COLLECTION) {
-          const exists = await db.listCollections({ name: MONGODB_COLLECTION }).hasNext().catch(() => false);
-          if (exists) {
-            menuCollection = db.collection(MONGODB_COLLECTION);
-            resolvedCollectionName = MONGODB_COLLECTION;
-            console.log(`Mongo: using configured collection "${resolvedCollectionName}"`);
-            lastMongoError = null;
-            return;
-          } else {
-            console.warn(`Mongo: configured collection "${MONGODB_COLLECTION}" not found in DB "${MONGODB_DB}"`);
-          }
+        
+        // Test connection
+        await mongoClient.db().command({ ping: 1 });
+        
+        const db = mongoClient.db(MONGODB_DB);
+        
+        // Check if collection exists
+        const collections = await db.listCollections({ name: MONGODB_COLLECTION }).toArray();
+        if (collections.length > 0) {
+          menuCollection = db.collection(MONGODB_COLLECTION);
+          console.log(`MongoDB connected! Using collection: ${MONGODB_COLLECTION}`);
+        } else {
+          // Create collection if it doesn't exist
+          menuCollection = db.collection(MONGODB_COLLECTION);
+          console.log(`MongoDB connected! Created collection: ${MONGODB_COLLECTION}`);
         }
-
-        // try some common names
-        const common = ['menu', 'menudata', 'menuitems', 'items', 'products'];
-        for (const name of common) {
-          const exists = await db.listCollections({ name }).hasNext().catch(() => false);
-          if (exists) {
-            menuCollection = db.collection(name);
-            resolvedCollectionName = name;
-            console.log(`Mongo: auto-detected collection "${resolvedCollectionName}"`);
-            lastMongoError = null;
-            return;
-          }
-        }
-
-        // fallback to first collection
-        const cols = await db.listCollections().toArray().catch(() => []);
-        if (cols.length > 0) {
-          resolvedCollectionName = cols[0].name;
-          menuCollection = db.collection(resolvedCollectionName);
-          console.log(`Mongo: falling back to first collection "${resolvedCollectionName}"`);
-          lastMongoError = null;
-          return;
-        }
-
-        // no collections found
-        lastErr = new Error(`No collections found in DB "${MONGODB_DB}"`);
-        try { await mongoClient.close(); } catch (_) {}
-        mongoClient = null;
-        menuCollection = null;
-        resolvedCollectionName = null;
+        
+        lastMongoError = null;
+        return true;
       } catch (err) {
-        // improved error diagnostics
-        lastErr = err;
-        const diag = {
-          message: err && err.message,
-          name: err && err.name,
-          code: err && err.code,
-          codeName: err && err.codeName,
-          stack: err && err.stack
-        };
-        lastMongoError = JSON.stringify(diag, Object.keys(diag), 2);
-        console.error(`Mongo connect attempt ${attempt} failed:`, diag);
-        try { if (mongoClient) await mongoClient.close(); } catch (_) {}
-        mongoClient = null;
-        menuCollection = null;
-        resolvedCollectionName = null;
-        const backoff = 500 * attempt;
-        console.warn(`Mongo connect attempt ${attempt} failed: ${err && err.message ? err.message : err}. retrying in ${backoff}ms`);
-        await new Promise(r => setTimeout(r, backoff));
+        console.error(`MongoDB attempt ${attempt} failed:`, err.message);
+        lastMongoError = err.message;
+        
+        if (mongoClient) {
+          try { await mongoClient.close(); } catch (_) {}
+          mongoClient = null;
+        }
+        
+        if (attempt < maxAttempts) {
+          await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
       }
     }
-
-    lastMongoError = lastErr && lastErr.stack ? lastErr.stack : String(lastErr);
-    console.error('Mongo connection failed after attempts:', lastErr && lastErr.message ? lastErr.message : lastErr);
+    
+    return false;
   } catch (err) {
-    lastMongoError = (err && err.stack) ? err.stack : String(err);
-    console.error('connectMongo unexpected error:', err && (err.stack || err));
-    try { if (mongoClient) await mongoClient.close(); } catch (_) {}
-    mongoClient = null;
-    menuCollection = null;
-    resolvedCollectionName = null;
+    console.error('MongoDB connection error:', err);
+    lastMongoError = err.message;
+    return false;
   }
 }
 
-// helper to load fallback menu file if present
+// Helper: normalize menu items
+function normalizeMenuItem(item) {
+  return {
+    _id: item._id,
+    id: item._id ? item._id.toString() : null,
+    title: item.title || item.name || 'Untitled',
+    category: item.category || 'Other',
+    price: typeof item.price === 'number' ? item.price : Number(item.price) || 0,
+    description: item.description || item.desc || '',
+    desc: item.description || item.desc || '',
+    image: item.image || null,
+    badge: item.badge || '',
+    tags: item.tags || '',
+    available: item.available !== false,
+    ...item
+  };
+}
+
+// Load fallback menu from JSON file
 function loadFallbackMenu() {
   if (!fs.existsSync(fallbackMenuFile)) return null;
   try {
@@ -253,370 +160,344 @@ function loadFallbackMenu() {
     if (parsed && Array.isArray(parsed.items)) return parsed.items;
     return null;
   } catch (err) {
-    console.error('Failed to read fallback menu file:', err);
+    console.error('Failed to read fallback menu:', err);
     return null;
   }
 }
 
-// root /health
-app.get('/', (_req, res) => res.json({ ok: true }));
+// Health check endpoint
+app.get('/', (_req, res) => {
+  res.json({ 
+    ok: true, 
+    message: 'Restaurant API is running',
+    mongodb: !!mongoClient,
+    timestamp: new Date().toISOString()
+  });
+});
 
-// --- added helper: scan all collections with counts for diagnostics ---
-async function scanCollections(db) {
-  try {
-    const cols = await db.listCollections().toArray();
-    const out = [];
-    for (const c of cols) {
-      let count = null;
-      try { count = await db.collection(c.name).countDocuments(); } catch {}
-      out.push({ name: c.name, count });
-    }
-    return out;
-  } catch (e) {
-    return [{ error: 'scan failed', detail: String(e && e.message || e) }];
-  }
-}
-// --- end added helper ---
-
-// /menu endpoint: prefer MongoDB, then fallback file, otherwise error
+// GET /menu - Fetch all menu items
 app.get('/menu', async (req, res) => {
   try {
-    // Try MongoDB first if configured
+    // Try MongoDB first
     if (MONGODB_URI) {
-      if (!mongoClient) await connectMongo();
-
-      // **MODIFIED**: If connect failed, return a clear error instead of falling back.
-      if (!mongoClient) {
+      const connected = await connectMongo();
+      
+      if (!connected || !menuCollection) {
         return res.status(502).json({
-          error: 'Failed to connect to MongoDB. See lastMongoError for details.',
-          lastMongoError: lastMongoError || 'No specific error was captured. Check server logs.',
-          hint: 'Verify MONGODB_URI in your environment and check Atlas Network Access (IP Whitelist).'
+          error: 'MongoDB connection failed',
+          details: lastMongoError,
+          hint: 'Check your MONGODB_URI and network access'
         });
       }
-
-      if (mongoClient) {
-        const db = mongoClient.db(MONGODB_DB || undefined);
-
-        // prefer already-resolved collection
-        let data = null;
-        if (menuCollection) {
-          data = await menuCollection.find({}).toArray();
-        } else {
-          const result = await fetchMenuFromDB(db);
-          if (result) {
-            data = result.docs;
-            resolvedCollectionName = result.name;
-            console.log(`Fetched menu from collection "${resolvedCollectionName}"`);
-          } else {
-            console.warn('fetchMenuFromDB found no documents in any collection.');
-          }
-        }
-
-        if (data) {
-          const rawCount = Array.isArray(data) ? data.length : 0;
-          const items = normalizeMenuDocs(data);
-          if (process.env.LOG_MENU_DIAG === 'true') {
-            console.log('[menu] rawDocs:', rawCount, 'normalizedItems:', items.length, 'collection:', resolvedCollectionName);
-          }
-          if (!items.length) {
-            const db = mongoClient.db(MONGODB_DB || undefined);
-            const colStats = await scanCollections(db);
-            return res.status(404).json({
-              error: 'No menu items matched expected shape',
-              rawDocs: rawCount,
-              collection: resolvedCollectionName,
-              collections: colStats,
-              hint: 'Ensure docs are either item docs or contain arrays: items/data/menu/categories[].items'
-            });
-          }
-          const formatted = items.map(item => ({
-            ...item,
-            price: toNumber(item.price),
-            badge: item.badge || '',
-            category: item.category || 'Other',
-            tags: item.tags || '',
-            description: item.description || item.desc || null,
-            desc: item.description || item.desc || null,
-            image: item.image ? (
-              /^https?:\/\//i.test(item.image)
-                ? item.image
-                : (process.env.IMAGE_BASE_URL ? process.env.IMAGE_BASE_URL.replace(/\/$/, '') + '/' + item.image
-                  : ((req.headers['x-forwarded-proto'] || req.protocol) + '://' + (req.get('host') || '') + '/images/' + item.image))
-            ) : null
-          }));
-          return res.json(formatted);
-        } else {
-          console.error('Mongo configured but no menu documents found. Check /debug/mongo for collection names and configuration.');
-          // **MODIFIED**: Also return an error here if data is null after successful connection
-          return res.status(404).json({ error: 'Database connected, but no menu documents were found in the specified collection.', collection: resolvedCollectionName });
-        }
-      }
+      
+      const items = await menuCollection.find({}).toArray();
+      const formatted = items.map(normalizeMenuItem);
+      
+      console.log(`GET /menu: Returned ${formatted.length} items from MongoDB`);
+      return res.json(formatted);
     }
-
-    // Fallback to data/menu.json if available
+    
+    // Fallback to JSON file
     const fallback = loadFallbackMenu();
     if (fallback) {
+      console.log(`GET /menu: Returned ${fallback.length} items from fallback file`);
       return res.json(fallback);
     }
-
-    // No data source available
-    return res.status(500).json({ error: 'No menu data source available (set MONGODB_URI or provide data/menu.json). Check /debug/mongo.' });
+    
+    // No data source
+    return res.status(500).json({ 
+      error: 'No menu data available',
+      hint: 'Set MONGODB_URI or create data/menu.json file'
+    });
   } catch (err) {
-    console.error('Error in /menu:', err);
-    res.status(500).json({ error: 'Failed to load menu' });
+    console.error('Error in GET /menu:', err);
+    res.status(500).json({ error: 'Failed to load menu', details: err.message });
   }
 });
 
-// /api/menu retains Mongo-first behavior but will also use fallback file if mongo not configured
+// GET /api/menu - Alias for /menu
 app.get('/api/menu', async (req, res) => {
   try {
     if (MONGODB_URI) {
-      if (!mongoClient) await connectMongo();
-
-      // **MODIFIED**: If connect failed, return a clear error instead of falling back.
-      if (!mongoClient) {
+      const connected = await connectMongo();
+      
+      if (!connected || !menuCollection) {
         return res.status(502).json({
-          error: 'Failed to connect to MongoDB. See lastMongoError for details.',
-          lastMongoError: lastMongoError || 'No specific error was captured. Check server logs.',
-          hint: 'Verify MONGODB_URI in your environment and check Atlas Network Access (IP Whitelist).'
+          error: 'MongoDB connection failed',
+          details: lastMongoError,
+          hint: 'Check your MONGODB_URI and network access'
         });
       }
-
-      if (mongoClient) {
-        const db = mongoClient.db(MONGODB_DB || undefined);
-        let data = null;
-        if (menuCollection) {
-          data = await menuCollection.find({}).toArray();
-        } else {
-          const result = await fetchMenuFromDB(db);
-          if (result) {
-            data = result.docs;
-            resolvedCollectionName = result.name;
-            console.log(`Fetched menu from collection "${resolvedCollectionName}"`);
-          } else {
-            console.warn('fetchMenuFromDB found no documents in any collection.');
-          }
-        }
-
-        if (data) {
-          const rawCount = Array.isArray(data) ? data.length : 0;
-          const items = normalizeMenuDocs(data);
-          if (process.env.LOG_MENU_DIAG === 'true') {
-            console.log('[api/menu] rawDocs:', rawCount, 'normalizedItems:', items.length, 'collection:', resolvedCollectionName);
-          }
-          if (!items.length) {
-            const db = mongoClient.db(MONGODB_DB || undefined);
-            const colStats = await scanCollections(db);
-            return res.status(404).json({
-              error: 'No menu items matched expected shape',
-              rawDocs: rawCount,
-              collection: resolvedCollectionName,
-              collections: colStats,
-              hint: 'Ensure docs are either item docs or contain arrays: items/data/menu/categories[].items'
-            });
-          }
-          const allItemsFormatted = items.map(item => ({
-            ...item,
-            price: toNumber(item.price),
-            badge: item.badge || '',
-            category: item.category || 'Other',
-            tags: item.tags || '',
-            description: item.description || item.desc || null,
-            desc: item.description || item.desc || null,
-            image: item.image ? (
-              /^https?:\/\//i.test(item.image)
-                ? item.image
-                : (process.env.IMAGE_BASE_URL ? process.env.IMAGE_BASE_URL.replace(/\/$/, '') + '/' + item.image
-                  : ((req.headers['x-forwarded-proto'] || req.protocol) + '://' + (req.get('host') || '') + '/images/' + item.image))
-            ) : null
-          }));
-          return res.json(allItemsFormatted);
-        } else {
-          console.error('Mongo configured but no menu documents found. Check /debug/mongo for collection names and configuration.');
-          // **MODIFIED**: Also return an error here if data is null after successful connection
-          return res.status(404).json({ error: 'Database connected, but no menu documents were found in the specified collection.', collection: resolvedCollectionName });
-        }
-      }
+      
+      const items = await menuCollection.find({}).toArray();
+      const formatted = items.map(normalizeMenuItem);
+      
+      console.log(`GET /api/menu: Returned ${formatted.length} items from MongoDB`);
+      return res.json(formatted);
     }
-
-    // Fallback to file
+    
     const fallback = loadFallbackMenu();
     if (fallback) {
+      console.log(`GET /api/menu: Returned ${fallback.length} items from fallback file`);
       return res.json(fallback);
     }
-
-    return res.status(500).json({ error: 'No menu data source available (set MONGODB_URI or provide data/menu.json). Check /debug/mongo.' });
-  } catch (error) {
-    console.error('Error reading menu data:', error);
-    res.status(500).json({ error: 'Failed to read menu data' });
+    
+    return res.status(500).json({ 
+      error: 'No menu data available',
+      hint: 'Set MONGODB_URI or create data/menu.json file'
+    });
+  } catch (err) {
+    console.error('Error in GET /api/menu:', err);
+    res.status(500).json({ error: 'Failed to load menu', details: err.message });
   }
 });
 
-// Add PUT /api/menu/:id for updating menu items
+// POST /api/menu - Add new menu item
+app.post('/api/menu', async (req, res) => {
+  try {
+    if (!MONGODB_URI) {
+      return res.status(500).json({ error: 'MongoDB not configured' });
+    }
+    
+    const connected = await connectMongo();
+    if (!connected || !menuCollection) {
+      return res.status(502).json({ error: 'MongoDB not connected' });
+    }
+    
+    const { title, category, price, description, image, badge, tags } = req.body;
+    
+    // Validate required fields
+    if (!title || !category || price === undefined) {
+      return res.status(400).json({ 
+        error: 'Missing required fields', 
+        required: ['title', 'category', 'price']
+      });
+    }
+    
+    const newItem = {
+      title: title.trim(),
+      category,
+      price: Number(price),
+      description: description || '',
+      desc: description || '',
+      image: image || null,
+      badge: badge || '',
+      tags: tags || '',
+      available: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    const result = await menuCollection.insertOne(newItem);
+    const insertedItem = await menuCollection.findOne({ _id: result.insertedId });
+    
+    console.log(`POST /api/menu: Added "${title}" (ID: ${result.insertedId})`);
+    res.json(normalizeMenuItem(insertedItem));
+  } catch (err) {
+    console.error('Error in POST /api/menu:', err);
+    res.status(500).json({ error: 'Failed to add menu item', details: err.message });
+  }
+});
+
+// PUT /api/menu/:id - Update menu item
 app.put('/api/menu/:id', async (req, res) => {
   try {
-    if (!MONGODB_URI) return res.status(500).json({ error: 'No MongoDB configured.' });
-    if (!mongoClient) await connectMongo();
-    if (!mongoClient || !menuCollection) return res.status(502).json({ error: 'MongoDB not connected.' });
-
-    const id = req.params.id;
-    const payload = req.body;
-    if (!id || !payload) return res.status(400).json({ error: 'Missing id or payload.' });
-
-    let filter = { $or: [{ _id: id }, { id }] };
-    let objectId;
-    try { objectId = new (await import('mongodb')).ObjectId(id); } catch {}
-    if (objectId) filter.$or.unshift({ _id: objectId });
-
-    const update = { $set: payload };
-    const result = await menuCollection.updateOne(filter, update);
-
-    if (result.matchedCount === 0) return res.status(404).json({ error: 'Menu item not found.' });
-
-    const updated = await menuCollection.findOne(filter);
-    res.json(updated);
+    if (!MONGODB_URI) {
+      return res.status(500).json({ error: 'MongoDB not configured' });
+    }
+    
+    const connected = await connectMongo();
+    if (!connected || !menuCollection) {
+      return res.status(502).json({ error: 'MongoDB not connected' });
+    }
+    
+    const { id } = req.params;
+    const { title, category, price, description, image, badge, tags, available } = req.body;
+    
+    if (!id) {
+      return res.status(400).json({ error: 'Missing item ID' });
+    }
+    
+    // Build update object
+    const updateData = {};
+    if (title !== undefined) updateData.title = title.trim();
+    if (category !== undefined) updateData.category = category;
+    if (price !== undefined) updateData.price = Number(price);
+    if (description !== undefined) {
+      updateData.description = description;
+      updateData.desc = description;
+    }
+    if (image !== undefined) updateData.image = image;
+    if (badge !== undefined) updateData.badge = badge;
+    if (tags !== undefined) updateData.tags = tags;
+    if (available !== undefined) updateData.available = available;
+    
+    updateData.updatedAt = new Date().toISOString();
+    
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+    
+    let filter;
+    try {
+      filter = { _id: new ObjectId(id) };
+    } catch {
+      filter = { id: id };
+    }
+    
+    const result = await menuCollection.updateOne(filter, { $set: updateData });
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Menu item not found' });
+    }
+    
+    const updatedItem = await menuCollection.findOne(filter);
+    console.log(`PUT /api/menu/${id}: Updated item`);
+    res.json(normalizeMenuItem(updatedItem));
   } catch (err) {
-    console.error('PUT /api/menu/:id error:', err);
-    res.status(500).json({ error: 'Failed to update menu item.' });
+    console.error('Error in PUT /api/menu/:id:', err);
+    res.status(500).json({ error: 'Failed to update menu item', details: err.message });
   }
 });
 
-// debug: collections + counts
-app.get('/debug/collections', async (_req, res) => {
+// DELETE /api/menu/:id - Delete menu item
+app.delete('/api/menu/:id', async (req, res) => {
   try {
-    if (!mongoClient) return res.status(400).json({ ok: false, error: 'Not connected' });
-    const db = mongoClient.db(MONGODB_DB || undefined);
-    const stats = await scanCollections(db);
-    res.json({ ok: true, db: MONGODB_DB, collection: resolvedCollectionName, stats });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
+    if (!MONGODB_URI) {
+      return res.status(500).json({ error: 'MongoDB not configured' });
+    }
+    
+    const connected = await connectMongo();
+    if (!connected || !menuCollection) {
+      return res.status(502).json({ error: 'MongoDB not connected' });
+    }
+    
+    const { id } = req.params;
+    
+    if (!id) {
+      return res.status(400).json({ error: 'Missing item ID' });
+    }
+    
+    let filter;
+    try {
+      filter = { _id: new ObjectId(id) };
+    } catch {
+      filter = { id: id };
+    }
+    
+    const result = await menuCollection.deleteOne(filter);
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'Menu item not found' });
+    }
+    
+    console.log(`DELETE /api/menu/${id}: Deleted item`);
+    res.json({ success: true, message: 'Item deleted successfully' });
+  } catch (err) {
+    console.error('Error in DELETE /api/menu/:id:', err);
+    res.status(500).json({ error: 'Failed to delete menu item', details: err.message });
   }
 });
 
-// enhance existing /debug/mongo to include counts
+// Debug endpoint - Check MongoDB collections
 app.get('/debug/mongo', async (_req, res) => {
   try {
-    const connected = !!mongoClient;
-    let counts = [];
-    if (connected) counts = await scanCollections(mongoClient.db(MONGODB_DB || undefined));
+    if (!MONGODB_URI) {
+      return res.json({ 
+        mongodb_configured: false, 
+        message: 'MONGODB_URI not set in environment' 
+      });
+    }
+    
+    const connected = await connectMongo();
+    
+    if (!connected || !mongoClient) {
+      return res.json({
+        mongodb_configured: true,
+        connected: false,
+        error: lastMongoError,
+        uri_mask: maskUri(MONGODB_URI)
+      });
+    }
+    
+    const db = mongoClient.db(MONGODB_DB);
+    const collections = await db.listCollections().toArray();
+    const collectionNames = collections.map(c => c.name);
+    
+    let itemCount = 0;
+    if (menuCollection) {
+      itemCount = await menuCollection.countDocuments();
+    }
+    
     res.json({
-      ok: true,
-      connected,
-      db: MONGODB_DB,
-      resolvedCollection: resolvedCollectionName || null,
-      lastMongoError,
-      counts
+      mongodb_configured: true,
+      connected: true,
+      database: MONGODB_DB,
+      collection: MONGODB_COLLECTION,
+      collections_available: collectionNames,
+      item_count: itemCount,
+      uri_mask: maskUri(MONGODB_URI)
     });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// serve favicon if present, otherwise return 204 to silence browser 404s
+// Favicon
 const faviconFile = path.join(__dirname, 'public', 'favicon.ico');
 if (fs.existsSync(faviconFile)) {
   app.get('/favicon.ico', (_req, res) => res.sendFile(faviconFile));
 } else {
-  app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
+  app.get('/favicon.ico', (_req, res) => res.status(204).end());
 }
 
-// Add helper endpoint that shows how to form a protection-bypass URL for this deployment.
-// This does NOT bypass protection by itself — you must obtain a bypass token from Vercel
-// and paste it into the returned template.
-app.get('/auth/info', (req, res) => {
-  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-  const host = req.get('host') || 'https://restaurant-backend-938s-3g6zonnay-sads-projects-eadc351b.vercel.app/';
-  // the path you likely want to access (menu)
-  const targetPath = '/api/menu';
-  const template = `${proto}://${host}${targetPath}?x-vercel-set-bypass-cookie=true&x-vercel-protection-bypass=<REPLACE_WITH_BYPASS_TOKEN>`;
-  res.json({
-    ok: true,
-    message: 'If your deployment is protected by Vercel Authentication, obtain a bypass token (see Vercel docs) and open the generated URL below in your browser.',
-    template,
-    docs: 'https://vercel.com/docs/deployment-protection',
-    notes: [
-      'Obtain the bypass token via Vercel MCP or the Vercel dashboard (see docs).',
-      'Replace <REPLACE_WITH_BYPASS_TOKEN> in the template and open the URL in your browser.',
-      'This endpoint only returns the template; it does not bypass protection by itself.'
-    ]
-  });
-});
-
-// --- 404 handler ---
+// 404 handler
 app.use((_req, res) => {
-  res.status(404).json({ error: 'Not found' });
+  res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// --- error handler ---
+// Error handler
 app.use((err, _req, res, _next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// --- other middleware / startServer / exports ---
-// export the express app and connectMongo for serverless wrapper / local starter
-export const expressApp = app;
-export { connectMongo };
-
-// add getter so serverless wrapper can report the last Mongo error
-export function getLastMongoError() {
-	return lastMongoError;
-}
-
-// Ensure a default export is present for environments that expect it (Vercel)
-export default app;
-
-// --- Add: startServer for local runs (do not run when imported by Vercel) ---
-function startServer(port = Number(PORT) || 3000, attempt = 0) {
-  const listenPort = Number(port) || 3000;
-  const server = app.listen(listenPort, () => {
-    console.log(`Server running on port ${listenPort}`);
-  });
-
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE' && attempt < 5) {
-      const nextPort = listenPort + 1;
-      console.warn(`Port ${listenPort} in use, trying next port ${nextPort}...`);
-      setTimeout(() => startServer(nextPort, attempt + 1), 500);
-      return;
+// Start server for local development
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const startServer = async () => {
+    if (MONGODB_URI) {
+      await connectMongo().catch(console.warn);
     }
-    console.error('Failed to start server:', err);
-    process.exit(1);
-  });
-
-  // graceful shutdown helpers for local dev
-  const shutdown = async () => {
-    try {
-      console.log('Shutting down server...');
+    
+    const server = app.listen(PORT, () => {
+      console.log(`\n🚀 Restaurant API Server running on port ${PORT}`);
+      console.log(`📍 Health check: http://localhost:${PORT}/`);
+      console.log(`📋 Menu endpoint: http://localhost:${PORT}/api/menu`);
+      if (MONGODB_URI) {
+        console.log(`🗄️  MongoDB: Connected to ${MONGODB_DB}.${MONGODB_COLLECTION}`);
+      } else {
+        console.log(`📁 Fallback mode: Using data/menu.json`);
+      }
+      console.log(`\n✅ Server ready!\n`);
+    });
+    
+    // Graceful shutdown
+    const shutdown = async () => {
+      console.log('\nShutting down...');
       server.close(() => {
-        console.log('HTTP server closed.');
+        if (mongoClient) {
+          mongoClient.close().catch(console.error);
+        }
         process.exit(0);
       });
-      if (mongoClient) {
-        try { await mongoClient.close(); } catch (_) {}
-      }
-    } catch (e) {
-      console.error('Error during shutdown:', e);
-      process.exit(1);
-    }
+    };
+    
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
   };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  
+  startServer();
 }
 
-// Start server only when executed directly (node index.js), not when imported by Vercel
-if (path.resolve(process.argv[1] || '') === __filename) {
-  (async () => {
-    // optional initial DB connect for local runs (non-blocking if it fails)
-    if (MONGODB_URI) {
-      await connectMongo().catch(err => console.warn('Initial connectMongo error (ignored):', err && (err.stack || err)));
-      // small grace period
-      await new Promise(r => setTimeout(r, 100));
-    }
-    startServer();
-  })();
-} else {
-  console.log('Express app imported (no local listener started).');
-}
-
+export default app;
+export { connectMongo };

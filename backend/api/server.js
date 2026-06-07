@@ -1,274 +1,217 @@
-import { MongoClient, ObjectId } from "mongodb";
+import { MongoClient, ObjectId } from 'mongodb';
 
-// small helper to mask URIs in logs
+// Helper functions
 function maskUri(uri) {
   if (!uri) return '';
-  return uri.length > 40 ? uri.slice(0, 20).replace(/:[^:@]+@/, ':***@') + '...' + uri.slice(-15) : uri.replace(/:[^:@]+@/, ':***@');
+  if (uri.length <= 60) return uri.replace(/:[^:@]+@/, ':***@');
+  return uri.slice(0, 30).replace(/:[^:@]+@/, ':***@') + '...' + uri.slice(-20);
 }
 
-function safeJson(res, status, obj) {
-  try {
-    res.statusCode = status;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(obj));
-  } catch (e) {
-    try { res.statusCode = status; res.end(String(obj)); } catch (_) {}
-  }
+function sendJson(res, statusCode, data) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(data));
 }
 
-// This file is only for Vercel deployment routing. All CRUD logic is in index.js.
-// Do not add business logic here. Use index.js for menu add/delete/update.
+// Normalize menu item for frontend
+function normalizeItem(item) {
+  return {
+    _id: item._id,
+    id: item._id.toString(),
+    title: item.title || item.name || 'Untitled',
+    category: item.category || 'Other',
+    price: typeof item.price === 'number' ? item.price : Number(item.price) || 0,
+    description: item.description || item.desc || '',
+    desc: item.description || item.desc || '',
+    image: item.image || null,
+    badge: item.badge || '',
+    tags: item.tags || '',
+    available: item.available !== false,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+}
 
+// Main Vercel handler
 export default async function handler(req, res) {
-  // --- Add: Log incoming Authorization header for 401 debugging ---
-  const authHeader = req.headers.authorization || null;
-  const maskedAuth = authHeader ? `${authHeader.substring(0, 12)}...` : 'Not Present';
-  console.log(`[serverless] Request to ${req.url}. Authorization header: ${maskedAuth}`);
-  // --- End added code ---
-
-  // --- Add: support Vercel deployment-protection bypass flow ---
-  try {
-    const host = req.headers.host || 'localhost';
-    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
-    const url = new URL(req.url, `${proto}://${host}`);
-    const setBypass = url.searchParams.get('x-vercel-set-bypass-cookie');
-    const bypassToken = url.searchParams.get('x-vercel-protection-bypass');
-
-    if (setBypass === 'true' && bypassToken) {
-      const cookieVal = encodeURIComponent(bypassToken);
-      const secureFlag = proto === 'https' ? 'Secure;' : '';
-      // Set cookie name as Vercel expects and redirect to cleaned URL
-      const cookie = `x-vercel-protection-bypass=${cookieVal}; Path=/; Max-Age=3600; HttpOnly=false; ${secureFlag} SameSite=Lax`;
-      res.setHeader('Set-Cookie', cookie);
-      url.searchParams.delete('x-vercel-set-bypass-cookie');
-      url.searchParams.delete('x-vercel-protection-bypass');
-      const cleanPath = url.pathname + (url.search ? `?${url.searchParams.toString()}` : '');
-      res.statusCode = 302;
-      res.setHeader('Location', cleanPath);
-      res.end();
-      return;
-    }
-  } catch (e) {
-    // ignore parsing errors and continue to normal handling
-    console.warn('Bypass cookie handler error (continuing):', e && e.stack ? e.stack : e);
-  }
-
-  // Early detect browser navigation that would hit Vercel Deployment Protection.
-  // This should NOT block API calls (e.g., from fetch) which may also have a 'mozilla' user-agent.
-  const accept = req.headers['accept'] || '';
-  const isBrowserNavigation = accept.startsWith('text/html');
-
-  if (isBrowserNavigation) {
-    return safeJson(res, 403, {
-      error: 'Deployment may be protected by Vercel Authentication.',
-      message: 'This is an API endpoint. If you are seeing this in a browser, it might be because Vercel Deployment Protection is active. To access the API, you must either disable the protection or use a bypass token.',
-      docs: 'https://vercel.com/docs/deployment-protection'
-    });
-  }
-
-  const start = Date.now();
-  console.log(`[serverless] ${req.method} ${req.url} - MONGODB_URI set? ${!!process.env.MONGODB_URI} uri: ${maskUri(process.env.MONGODB_URI)}`);
-
-  if (!process.env.MONGODB_URI) {
-    safeJson(res, 500, {
-      error: 'MONGODB_URI not set in Vercel environment variables',
-      hint: 'Add MONGODB_URI, MONGODB_DB and MONGODB_COLLECTION in Project Settings → Environment Variables'
-    });
-    return;
-  }
-
-  let mod;
-  try {
-    // Dynamic import so import-time errors are caught and returned
-    mod = await import('../index.js');
-  } catch (impErr) {
-    console.error('[serverless] import ../index.js failed:', impErr && (impErr.stack || impErr));
-    safeJson(res, 500, {
-      error: 'Failed to import backend module',
-      reason: impErr && (impErr.message || String(impErr)),
-      stack: impErr && (impErr.stack || null),
-      hint: 'Check Vercel function logs for import-time errors (missing files, syntax errors, or unsupported APIs).'
-    });
-    return;
-  }
-
-  const { expressApp: app, connectMongo, getLastMongoError } = mod;
-
-  // attempt DB connection and return diagnostics if it fails
-  try {
-    await connectMongo();
-    try {
-      // lightweight diagnostics after connect
-      const mod2 = await import('../index.js');
-      const dbName = process.env.MONGODB_DB;
-      const clientConnected = typeof mod2.connectMongo === 'function';
-      if (clientConnected && process.env.LOG_MENU_DIAG === 'true') {
-        const { expressApp: _app } = mod2;
-        // Fire internal request to /debug/collections (non-blocking)
-        fetch(`http://localhost/debug/collections`).catch(()=>{});
-      }
-    } catch {}
-  } catch (err) {
-    console.error('[serverless] connectMongo() threw:', err && (err.stack || err));
-    const last = typeof getLastMongoError === 'function' ? getLastMongoError() : null;
-    safeJson(res, 502, {
-      error: 'Failed to connect to MongoDB from serverless function',
-      reason: err && (err.message || String(err)),
-      lastMongoError: last || null,
-      hint: 'Check MONGODB_URI, MONGODB_DB, MONGODB_COLLECTION and Atlas network access (IP whitelist / VPC).'
-    });
-    return;
-  }
-
-  // Enable CORS for all origins
+  // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-
-  // Handle preflight OPTIONS request
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Handle preflight
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
-
-  // --- ADD: Handle POST (add food) ---
-  if (req.method === "POST") {
-    const payload = req.body;
-    if (!payload || !payload.title || !payload.category || !payload.price) {
-      return safeJson(res, 400, { error: "Missing required fields." });
-    }
-    const client = await MongoClient.connect(process.env.MONGODB_URI);
-    const db = client.db(process.env.MONGODB_DB);
-    const collection = db.collection(process.env.MONGODB_COLLECTION);
-    const doc = {
-      ...payload,
-      price: Number(payload.price),
-      description: payload.description ?? payload.desc ?? '',
-      desc: payload.description ?? payload.desc ?? ''
-    };
-    const result = await collection.insertOne(doc);
-    const created = await collection.findOne({ _id: result.insertedId });
-    await client.close();
-    return safeJson(res, 200, created);
+  
+  console.log(`[API] ${req.method} ${req.url}`);
+  
+  // Check MongoDB configuration
+  if (!process.env.MONGODB_URI) {
+    console.error('[API] MONGODB_URI not configured');
+    return sendJson(res, 500, {
+      error: 'MongoDB not configured',
+      hint: 'Add MONGODB_URI, MONGODB_DB, MONGODB_COLLECTION to Vercel environment variables'
+    });
   }
-
-  // --- ADD: Handle DELETE (delete food) ---
-  if (req.method === "DELETE") {
-    // Support both /api/menu/:id and /api/menu?id=...
-    let id = req.query.id;
-    if (!id && req.url) {
-      // Try to extract id from /api/menu/:id
-      const match = req.url.match(/\/api\/menu\/([^/?]+)/);
-      if (match) id = match[1];
+  
+  let client = null;
+  
+  try {
+    // Connect to MongoDB
+    client = new MongoClient(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 10000,
+    });
+    
+    await client.connect();
+    console.log('[API] MongoDB connected');
+    
+    const dbName = process.env.MONGODB_DB || 'restaurant';
+    const collectionName = process.env.MONGODB_COLLECTION || 'menuitems';
+    const db = client.db(dbName);
+    const collection = db.collection(collectionName);
+    
+    // GET - Fetch all menu items
+    if (req.method === 'GET') {
+      const items = await collection.find({}).toArray();
+      const formatted = items.map(normalizeItem);
+      
+      console.log(`[API] GET: Returning ${formatted.length} items`);
+      return sendJson(res, 200, formatted);
     }
-    if (!id && req.body) id = req.body._id || req.body.id;
-    if (!id) {
-      return safeJson(res, 400, { error: "Missing id for deletion" });
+    
+    // POST - Add new menu item
+    if (req.method === 'POST') {
+      const payload = req.body;
+      
+      // Validate required fields
+      if (!payload || !payload.title || !payload.category || payload.price === undefined) {
+        return sendJson(res, 400, {
+          error: 'Missing required fields',
+          required: ['title', 'category', 'price']
+        });
+      }
+      
+      const newItem = {
+        title: payload.title.trim(),
+        category: payload.category,
+        price: Number(payload.price),
+        description: payload.description || payload.desc || '',
+        desc: payload.description || payload.desc || '',
+        image: payload.image || null,
+        badge: payload.badge || '',
+        tags: payload.tags || '',
+        available: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      
+      const result = await collection.insertOne(newItem);
+      const insertedItem = await collection.findOne({ _id: result.insertedId });
+      
+      console.log(`[API] POST: Added "${payload.title}" (ID: ${result.insertedId})`);
+      return sendJson(res, 200, normalizeItem(insertedItem));
     }
-    const client = await MongoClient.connect(process.env.MONGODB_URI);
-    const db = client.db(process.env.MONGODB_DB);
-    const collection = db.collection(process.env.MONGODB_COLLECTION);
-    let filter;
-    try {
-      filter = { _id: new ObjectId(id) };
-    } catch {
-      filter = { id };
-    }
-    const result = await collection.deleteOne(filter);
-    await client.close();
-    if (result.deletedCount === 0) {
-      return safeJson(res, 404, { error: "Menu item not found." });
-    }
-    return safeJson(res, 200, { ok: true });
-  }
-
-  // --- ADD: Handle PUT (update food) ---
-  if (req.method === "PUT") {
-    let client;
-    try {
-      // Accept JSON body (Vercel parses req.body for serverless)
-      const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    
+    // PUT - Update menu item
+    if (req.method === 'PUT') {
+      // Extract ID from URL path
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
         if (match) id = match[1];
       }
-      if (!id && payload) id = payload._id || payload.id;
+      
+      const payload = req.body;
+      
       if (!id) {
-        return safeJson(res, 400, { error: 'Missing id for update' });
+        return sendJson(res, 400, { error: 'Missing item ID' });
       }
+      
       if (!payload || Object.keys(payload).length === 0) {
-        return safeJson(res, 400, { error: 'Missing payload.' });
+        return sendJson(res, 400, { error: 'No update data provided' });
       }
-
-      client = await MongoClient.connect(process.env.MONGODB_URI);
-      const db = client.db(process.env.MONGODB_DB);
-      const collection = db.collection(process.env.MONGODB_COLLECTION);
-
+      
+      // Build update object
+      const updateData = { updatedAt: new Date().toISOString() };
+      if (payload.title !== undefined) updateData.title = payload.title.trim();
+      if (payload.category !== undefined) updateData.category = payload.category;
+      if (payload.price !== undefined) updateData.price = Number(payload.price);
+      if (payload.description !== undefined) {
+        updateData.description = payload.description;
+        updateData.desc = payload.description;
+      }
+      if (payload.image !== undefined) updateData.image = payload.image;
+      if (payload.badge !== undefined) updateData.badge = payload.badge;
+      if (payload.tags !== undefined) updateData.tags = payload.tags;
+      if (payload.available !== undefined) updateData.available = payload.available;
+      
+      // Create filter
       let filter;
-      let objectId = null;
       try {
-        objectId = new ObjectId(id);
-        filter = { _id: objectId };
+        filter = { _id: new ObjectId(id) };
       } catch {
-        filter = { id: String(id) };
+        filter = { id: id };
       }
-
-      // Only allow updatable fields
-      const allowed = {};
-      const fields = ['category', 'title', 'price', 'image', 'description', 'desc'];
-      fields.forEach(k => {
-        if (payload[k] !== undefined) allowed[k] = payload[k];
-      });
-      // Always set both description and desc
-      const descValue = payload.description ?? payload.desc ?? '';
-      allowed.description = descValue;
-      allowed.desc = descValue;
-      if (allowed.price !== undefined) {
-        const priceValue = Number(allowed.price);
-        if (!isNaN(priceValue) && priceValue >= 0) {
-          allowed.price = priceValue;
-        } else {
-          delete allowed.price;
-        }
-      }
-      if ('_id' in allowed) delete allowed._id;
-      allowed.updatedAt = new Date().toISOString();
-
-      if (Object.keys(allowed).length === 0) {
-        return safeJson(res, 400, { error: 'No valid fields provided for update.' });
-      }
-
-      const result = await collection.updateOne(filter, { $set: allowed });
-
-      console.log('PUT /api/menu/:id', { id, filter, allowed, matched: result.matchedCount, modified: result.modifiedCount });
-
+      
+      const result = await collection.updateOne(filter, { $set: updateData });
+      
       if (result.matchedCount === 0) {
-        if (client) await client.close();
-        return safeJson(res, 404, { error: 'Menu item not found.' });
+        return sendJson(res, 404, { error: 'Menu item not found' });
       }
-
-      if (result.modifiedCount === 0) {
-        if (client) await client.close();
-        return safeJson(res, 409, {
-          error: 'Update failed: Item found but NO fields were modified (data was identical).',
-          details: allowed
-        });
+      
+      const updatedItem = await collection.findOne(filter);
+      console.log(`[API] PUT: Updated item ${id}`);
+      return sendJson(res, 200, normalizeItem(updatedItem));
+    }
+    
+    // DELETE - Remove menu item
+    if (req.method === 'DELETE') {
+      // Extract ID from URL path
+      let id = req.query.id;
+      if (!id && req.url) {
+        const match = req.url.match(/\/api\/menu\/([^/?]+)/);
+        if (match) id = match[1];
       }
-
-      // Success response: modifiedCount > 0
-      if (client) await client.close();
-      return safeJson(res, 200, {
-        ok: true,
-        message: 'Item updated successfully.',
-        id: objectId ? String(objectId) : id
-      });
-    } catch (err) {
-      if (client) await client.close();
-      console.error('PUT /api/menu/:id error:', err);
-      return safeJson(res, 500, { error: 'Failed to update menu item.', reason: err.message || String(err) });
+      
+      if (!id) {
+        return sendJson(res, 400, { error: 'Missing item ID' });
+      }
+      
+      // Create filter
+      let filter;
+      try {
+        filter = { _id: new ObjectId(id) };
+      } catch {
+        filter = { id: id };
+      }
+      
+      const result = await collection.deleteOne(filter);
+      
+      if (result.deletedCount === 0) {
+        return sendJson(res, 404, { error: 'Menu item not found' });
+      }
+      
+      console.log(`[API] DELETE: Removed item ${id}`);
+      return sendJson(res, 200, { success: true, message: 'Item deleted successfully' });
+    }
+    
+    // Method not allowed
+    return sendJson(res, 405, { error: `Method ${req.method} not allowed` });
+    
+  } catch (error) {
+    console.error('[API] Error:', error);
+    return sendJson(res, 500, {
+      error: 'Internal server error',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  } finally {
+    if (client) {
+      await client.close();
+      console.log('[API] MongoDB connection closed');
     }
   }
-
-  safeJson(res, 404, { error: 'Not found' });
 }
