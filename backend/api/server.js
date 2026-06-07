@@ -72,9 +72,64 @@ export default async function handler(req, res) {
     const collectionName = process.env.MONGODB_COLLECTION || 'menuitems';
     const db = client.db(dbName);
     const collection = db.collection(collectionName);
+    const settingsCollection = db.collection('settings');
     
+    // ========== CATEGORY ORDER ENDPOINTS ==========
+    // GET /api/categories/order - Get category order
+    if (req.method === 'GET' && req.url === '/api/categories/order') {
+      try {
+        // Find category order setting
+        const setting = await settingsCollection.findOne({ key: 'categoryOrder' });
+        
+        if (setting && setting.value) {
+          console.log('Returning saved category order:', setting.value);
+          return sendJson(res, 200, { order: setting.value });
+        } else {
+          // Return default order (alphabetical)
+          const categories = await collection.distinct('category');
+          const defaultOrder = categories.filter(Boolean).sort();
+          console.log('Returning default category order:', defaultOrder);
+          return sendJson(res, 200, { order: defaultOrder });
+        }
+      } catch (err) {
+        console.error('Error getting category order:', err);
+        return sendJson(res, 500, { error: 'Failed to get category order' });
+      }
+    }
+    
+    // POST /api/categories/order - Save category order
+    if (req.method === 'POST' && req.url === '/api/categories/order') {
+      try {
+        const { order } = req.body;
+        
+        if (!order || !Array.isArray(order)) {
+          return sendJson(res, 400, { error: 'Invalid order data' });
+        }
+        
+        // Update or insert category order
+        const result = await settingsCollection.updateOne(
+          { key: 'categoryOrder' },
+          { 
+            $set: { 
+              key: 'categoryOrder', 
+              value: order, 
+              updatedAt: new Date().toISOString() 
+            } 
+          },
+          { upsert: true }
+        );
+        
+        console.log(`Category order saved: ${order.join(', ')} (matched: ${result.matchedCount}, modified: ${result.modifiedCount})`);
+        return sendJson(res, 200, { success: true, order });
+      } catch (err) {
+        console.error('Error saving category order:', err);
+        return sendJson(res, 500, { error: 'Failed to save category order' });
+      }
+    }
+    
+    // ========== MENU CRUD ENDPOINTS ==========
     // GET - Fetch all menu items
-    if (req.method === 'GET') {
+    if (req.method === 'GET' && req.url === '/api/menu') {
       const items = await collection.find({}).toArray();
       const formatted = items.map(normalizeItem);
       
@@ -82,8 +137,17 @@ export default async function handler(req, res) {
       return sendJson(res, 200, formatted);
     }
     
+    // GET - Handle root path
+    if (req.method === 'GET' && req.url === '/') {
+      return sendJson(res, 200, { 
+        ok: true, 
+        message: 'Restaurant API is running',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     // POST - Add new menu item
-    if (req.method === 'POST') {
+    if (req.method === 'POST' && req.url === '/api/menu') {
       const payload = req.body;
       
       // Validate required fields
@@ -115,9 +179,9 @@ export default async function handler(req, res) {
       return sendJson(res, 200, normalizeItem(insertedItem));
     }
     
-    // PUT - Update menu item
-    if (req.method === 'PUT') {
-      // Extract ID from URL path
+    // PUT - Update menu item (supports both /api/menu/:id and /api/menu?id=)
+    if (req.method === 'PUT' && (req.url.startsWith('/api/menu/') || req.url.startsWith('/api/menu?id='))) {
+      // Extract ID from URL path or query
       let id = req.query.id;
       if (!id && req.url) {
         const match = req.url.match(/\/api\/menu\/([^/?]+)/);
@@ -168,7 +232,7 @@ export default async function handler(req, res) {
     }
     
     // DELETE - Remove menu item
-    if (req.method === 'DELETE') {
+    if (req.method === 'DELETE' && (req.url.startsWith('/api/menu/') || req.url.startsWith('/api/menu?id='))) {
       // Extract ID from URL path
       let id = req.query.id;
       if (!id && req.url) {
@@ -198,8 +262,23 @@ export default async function handler(req, res) {
       return sendJson(res, 200, { success: true, message: 'Item deleted successfully' });
     }
     
-    // Method not allowed
-    return sendJson(res, 405, { error: `Method ${req.method} not allowed` });
+    // ========== DEBUG ENDPOINT ==========
+    // GET /debug/settings - Check settings collection (helpful for debugging)
+    if (req.method === 'GET' && req.url === '/debug/settings') {
+      try {
+        const allSettings = await settingsCollection.find({}).toArray();
+        return sendJson(res, 200, {
+          settings: allSettings,
+          collectionName: 'settings',
+          count: allSettings.length
+        });
+      } catch (err) {
+        return sendJson(res, 500, { error: err.message });
+      }
+    }
+    
+    // Method not allowed for other paths
+    return sendJson(res, 404, { error: `Endpoint ${req.url} not found` });
     
   } catch (error) {
     console.error('[API] Error:', error);
